@@ -12,17 +12,19 @@ Design (see https://secure-terminal.github.io):
   ANSI/OSC escape sequences are removed and every byte that is not printable
   ASCII (plus tab, newline and backspace) is dropped. There is no escape parser,
   so a hostile filename, a forged status line or a Trojan-Source comment cannot
-  redraw or reorder what you read. Backspace is the single exception, and a
-  necessary one: the interactive shell echoes its line editing as backspaces
-  (readline sends "\b \b" to rub out a character, and uses backspaces to redraw
-  after tab-completion and history recall) regardless of the pty's echo flag, so
-  a terminal that dropped them could not display line editing at all. We honor a
-  backspace as a destructive cursor-left, bounded to the current line: it can
-  never reach an earlier line or the scrollback. The residual is that a program
-  which prints its own backspaces can rewrite text WITHIN the line it is on
-  (e.g. "bad\b\b\bok" shows "ok"); this is far narrower than cursor addressing
-  and cannot touch already-committed lines, but it is the one lie this terminal
-  cannot fully refuse without breaking interactive editing.
+  redraw or reorder what you read. Two cursor controls are honored, and both are
+  necessary: the interactive shell echoes its line editing with backspace and
+  carriage return (readline sends "\b \b" to rub out a character and redraw after
+  tab-completion/history; zsh returns to column 0 with a carriage return to draw
+  its prompt) regardless of the pty's echo flag, so a terminal that dropped them
+  could not display line editing at all. Backspace erases the character to its
+  left; carriage return clears the current line back to column 0. BOTH are
+  bounded to the current line and can never reach an earlier line or the
+  scrollback. The residual is that a program which prints its own backspaces or
+  carriage returns can rewrite text WITHIN the line it is on (e.g. "bad\b\b\bok"
+  shows "ok"); this is far narrower than cursor addressing and cannot touch
+  already-committed lines, but it is the one lie this terminal cannot fully
+  refuse without breaking interactive editing.
 
 - PASTE is sanitized the same way before it reaches the shell, so invisible or
   bidi characters copied from a web page never enter your command line.
@@ -68,12 +70,15 @@ _ANSI = re.compile(
 
 
 def sanitize_bytes(data):
-    """Return printable-ASCII text (plus tab/newline/backspace) from raw terminal
-    bytes. Backspace (0x08) is kept because the shell's line editor emits it to
-    erase a character; _append() honors it as a destructive cursor-left. It is
-    the one control effect we interpret, and it stays inside the current line."""
+    """Return printable-ASCII text (plus tab/newline) and the two interactive
+    cursor controls backspace (0x08) and carriage return (0x0D) from raw terminal
+    bytes. The shell's line editor emits both -- backspace to erase a character,
+    carriage return to redraw a line from column 0 (e.g. zsh's prompt, a progress
+    bar) -- and _append() honors each as a line-local edit. They are the only
+    control effects we interpret, and neither can reach beyond the current line."""
     data = _ANSI.sub(b'', data)
-    kept = bytes(b for b in data if b in (0x08, 0x09, 0x0A) or 0x20 <= b <= 0x7E)
+    kept = bytes(b for b in data
+                 if b in (0x08, 0x09, 0x0A, 0x0D) or 0x20 <= b <= 0x7E)
     return kept.decode('ascii', 'ignore')
 
 
@@ -214,21 +219,45 @@ class SecureTerminal(QPlainTextEdit):
             return
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        # Honor backspace (0x08) as a destructive cursor-left so the shell's line
-        # editor can rub out a character (readline echoes "\b \b" to erase one).
-        # We never cross a line boundary, so it cannot rewrite earlier output the
-        # way an escape sequence could; U+2029 is Qt's block/newline separator.
-        parts = text.split('\x08')
-        cursor.insertText(parts[0])
-        for part in parts[1:]:
-            probe = QTextCursor(cursor)
-            probe.movePosition(QTextCursor.MoveOperation.Left,
-                               QTextCursor.MoveMode.KeepAnchor)
-            sel = probe.selectedText()
-            if sel and ord(sel[0]) not in (0x0A, 0x2029):
-                probe.removeSelectedText()
-                cursor = probe
-            cursor.insertText(part)
+        # Fast path: ordinary output carries no cursor controls, so insert whole.
+        if '\x08' not in text and '\r' not in text:
+            cursor.insertText(text)
+            self.setTextCursor(cursor)
+            self.ensureCursorVisible()
+            return
+        # Slow path: honor the two line-local cursor controls the shell's line
+        # editor emits. Backspace (0x08) erases the character to its left;
+        # carriage return (0x0D) clears the current line back to column 0 so it
+        # can be redrawn (zsh's prompt, a progress bar). Neither crosses a line
+        # boundary, so program output can never rewrite an earlier line or the
+        # scrollback; U+2029 is Qt's block (newline) separator.
+        move = QTextCursor.MoveOperation
+        keep = QTextCursor.MoveMode.KeepAnchor
+        run = ''
+        for ch in text:
+            if ch == '\x08':
+                if run:
+                    cursor.insertText(run)
+                    run = ''
+                probe = QTextCursor(cursor)
+                probe.movePosition(move.Left, keep)
+                sel = probe.selectedText()
+                if sel and ord(sel[0]) not in (0x0A, 0x2029):
+                    probe.removeSelectedText()
+                    cursor = probe
+            elif ch == '\r':
+                if run:
+                    cursor.insertText(run)
+                    run = ''
+                probe = QTextCursor(cursor)
+                probe.movePosition(move.StartOfBlock, keep)
+                if probe.selectedText():
+                    probe.removeSelectedText()
+                    cursor = probe
+            else:
+                run += ch
+        if run:
+            cursor.insertText(run)
         self.setTextCursor(cursor)
         self.ensureCursorVisible()
 
