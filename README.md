@@ -69,7 +69,11 @@ The safety model above does not cost you the usual conveniences:
   KEY=value file you can edit by hand.
 - **Tabs you can name and colour.** Double-click a tab to rename it; right-click
   for rename, a colour, or close. Handy when several tabs each run a different
-  TUI.
+  TUI. A user name and a program-set title are kept separately (your name wins as
+  the label; the program title shows in the tooltip).
+- **Run a specific program** (File -> New Tab Running..., `Ctrl+Shift+R`). Opens
+  a tab straight into `ssh host`, `tmux`, `claude`, etc. instead of the login
+  shell. A plain new tab (`Ctrl+Shift+T`) still runs `$SHELL`.
 - **Optional title / notifications** (View menu, per tab, default off). When on,
   and only in TUI mode, a program may set the tab title (OSC 0/2) and send
   notifications (OSC 9), both sanitized to plain ASCII first. Clipboard-write

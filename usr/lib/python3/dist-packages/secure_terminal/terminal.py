@@ -64,6 +64,7 @@ import signal
 import codecs
 import struct
 import termios
+import shlex
 
 try:
     import pyte
@@ -464,9 +465,13 @@ class SecureTerminal(QPlainTextEdit):
             # ncurses / Claude Code / a remote shell over ssh drive it properly.
             os.environ['TERM'] = 'xterm-256color' if self._tui else 'dumb'
             os.environ.setdefault('PAGER', 'cat')
-            shell = command or os.environ.get('SHELL') or '/bin/bash'
+            # `command` is an optional program to run (split like a shell word
+            # list, e.g. "ssh -p 22 host"); with none we run the login shell.
+            argv = shlex.split(command) if command else []
+            if not argv:
+                argv = [os.environ.get('SHELL') or '/bin/bash']
             try:
-                os.execvp(shell, [shell])
+                os.execvp(argv[0], argv)
             except OSError:
                 os._exit(127)
         self._pid = pid

@@ -130,8 +130,8 @@ class MainWindow(QMainWindow):
         self._update_terminate_enabled()
 
     # -- tabs, each its own shell over its own pseudo-terminal -----------------
-    def new_tab(self):
-        term = SecureTerminal(tui=self._default_tui)
+    def new_tab(self, command=None):
+        term = SecureTerminal(tui=self._default_tui, command=command or None)
         term.apply_theme(self._default_theme)
         term.apply_zoom(self._default_zoom)
         term.apply_mode(self._default_mode)
@@ -147,6 +147,12 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(index)
         self._sync_chrome_to_tab()
         term.setFocus()
+
+    def new_tab_running(self):
+        command, ok = QInputDialog.getText(
+            self, 'New Tab Running', 'Command (e.g. ssh host, tmux, claude):')
+        if ok and command.strip():
+            self.new_tab(command.strip())
 
     def close_tab(self, index):
         term = self.tabs.widget(index)
@@ -418,8 +424,16 @@ class MainWindow(QMainWindow):
         file_menu = bar.addMenu('&File')
         self.act_new = QAction(QIcon.fromTheme('tab-new'), 'New &Tab', self)
         self.act_new.setShortcut(QKeySequence('Ctrl+Shift+T'))
-        self.act_new.triggered.connect(self.new_tab)
+        self.act_new.triggered.connect(lambda: self.new_tab())
         file_menu.addAction(self.act_new)
+
+        self.act_new_cmd = QAction('New Tab &Running...', self)
+        self.act_new_cmd.setShortcut(QKeySequence('Ctrl+Shift+R'))
+        self.act_new_cmd.setToolTip(
+            'Open a tab running a specific program (e.g. ssh host, tmux, claude) '
+            'instead of the login shell.')
+        self.act_new_cmd.triggered.connect(self.new_tab_running)
+        file_menu.addAction(self.act_new_cmd)
 
         self.act_close = QAction(QIcon.fromTheme('window-close'),
                                  '&Close Tab', self)
