@@ -34,10 +34,19 @@ import os
 import pty
 import re
 import fcntl
+import signal
 
-from PyQt6.QtCore import QSocketNotifier, Qt
+from PyQt6.QtCore import QSocketNotifier, Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor, QColor, QPalette
 from PyQt6.QtWidgets import QPlainTextEdit
+
+# name -> (background, foreground). "dark" is white-on-black, "light" is the
+# reverse; both are plain, high-contrast, no syntax coloring.
+THEMES = {
+    'dark':  ('#14161b', '#e6e6e6'),
+    'light': ('#ffffff', '#1a1a1a'),
+}
+BASE_POINT_SIZE = 11
 
 # CSI (ESC [ ...), OSC (ESC ] ... BEL/ST) and other two-byte escapes.
 _ANSI = re.compile(
@@ -71,25 +80,57 @@ def sanitize_paste(text):
 
 
 class SecureTerminal(QPlainTextEdit):
+    # emitted when the child shell exits, so the window can close its tab
+    shell_exited = pyqtSignal()
+    # Ctrl+wheel over the widget asks the window to zoom by +1/-1 step
+    zoom_step = pyqtSignal(int)
+
     def __init__(self, parent=None, command=None):
         super().__init__(parent)
         self.setUndoRedoEnabled(False)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.setFrameStyle(0)
 
+        self._base_point_size = BASE_POINT_SIZE
         font = QFont('monospace')
         font.setStyleHint(QFont.StyleHint.Monospace)
-        font.setPointSize(11)
+        font.setPointSize(self._base_point_size)
         self.setFont(font)
 
-        pal = self.palette()
-        pal.setColor(QPalette.ColorRole.Base, QColor('#14161b'))
-        pal.setColor(QPalette.ColorRole.Text, QColor('#e6e6e6'))
-        self.setPalette(pal)
+        self._zoom = 100
+        self._theme = 'dark'
+        self.apply_theme(self._theme)
 
+        self._notifier = None
         self._fd = None
         self._pid = None
         self._start(command)
+
+    # -- appearance: theme + zoom ---------------------------------------------
+    def apply_theme(self, theme):
+        base, text = THEMES.get(theme, THEMES['dark'])
+        self._theme = theme if theme in THEMES else 'dark'
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Base, QColor(base))
+        pal.setColor(QPalette.ColorRole.Text, QColor(text))
+        self.setPalette(pal)
+
+    def apply_zoom(self, percent):
+        percent = max(10, min(1000, int(percent)))
+        self._zoom = percent
+        size = max(1, round(self._base_point_size * percent / 100.0))
+        font = self.font()
+        font.setPointSize(size)
+        self.setFont(font)
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta:
+                self.zoom_step.emit(1 if delta > 0 else -1)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     # -- child process over a pseudo-terminal ---------------------------------
     def _start(self, command):
@@ -116,10 +157,34 @@ class SecureTerminal(QPlainTextEdit):
         except (OSError, BlockingIOError):
             return
         if not data:
-            self._notifier.setEnabled(False)
-            self._append('\n[secure-terminal: shell exited]\n')
+            if self._notifier is not None:
+                self._notifier.setEnabled(False)
+            self.shell_exited.emit()
             return
         self._append(sanitize_bytes(data))
+
+    def shutdown(self):
+        """Detach the notifier, close the master fd and hang up the child. Used
+        when a tab is closed so the shell does not linger."""
+        if self._notifier is not None:
+            self._notifier.setEnabled(False)
+            self._notifier = None
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+            self._fd = None
+        if self._pid:
+            try:
+                os.kill(self._pid, signal.SIGHUP)
+            except OSError:
+                pass
+            try:
+                os.waitpid(self._pid, os.WNOHANG)
+            except (OSError, ChildProcessError):
+                pass
+            self._pid = None
 
     def _append(self, text):
         if not text:
@@ -155,9 +220,13 @@ class SecureTerminal(QPlainTextEdit):
     # -- input: printable ASCII + signal-key allowlist ------------------------
     def keyPressEvent(self, event):
         key = event.key()
-        ctrl = event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        mods = event.modifiers()
+        ctrl = mods & Qt.KeyboardModifier.ControlModifier
+        shift = mods & Qt.KeyboardModifier.ShiftModifier
 
-        if ctrl:
+        # Ctrl+Shift+<key> is reserved for the window (copy/paste, new/close tab,
+        # zoom); let those fall through to the QAction shortcuts.
+        if ctrl and not shift:
             mapping = {
                 Qt.Key.Key_C: b'\x03',        # SIGINT
                 Qt.Key.Key_Z: b'\x1a',        # SIGTSTP

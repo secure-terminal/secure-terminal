@@ -34,6 +34,23 @@ removed at the source.
   | `Ctrl+D` | EOF |
 
   We only write the control byte; the kernel line discipline does the rest.
+  Backspace is honored so you can rub out a typo; it erases one character and
+  never crosses a line, so it cannot rewrite earlier output.
+
+## Everyday comforts
+
+The safety model above does not cost you the usual conveniences:
+
+- **Tabs.** Each tab is its own shell over its own pseudo-terminal. Open with
+  `Ctrl+Shift+T`, close with `Ctrl+Shift+W`; closing a shell closes its tab.
+- **Copy and paste.** Toolbar buttons and `Ctrl+Shift+C` / `Ctrl+Shift+V`
+  (plain `Ctrl+C` stays `SIGINT`). Paste is still sanitized before it reaches
+  the shell.
+- **Text zoom.** `Ctrl+wheel`, `Ctrl+plus` / `Ctrl+minus`, or the percentage box
+  in the top right (Up/Down keys or type a value). `Ctrl+0` resets to 100%.
+- **Themes.** White-on-black and black-on-white, under **View -> Theme**. Plain,
+  high-contrast, no syntax coloring.
+- **Menu bar** for the same actions, discoverable rather than memorized.
 
 ## What it does not do (on purpose)
 
@@ -43,10 +60,10 @@ removed at the source.
 - **No non-ASCII by default.** Additional character sets may become opt-in much
   later, always as an explicit allowlist, never a general decoder.
 
-This is a deliberately minimal, line-oriented first version. Because the display
-neutralizes the escapes readline uses to redraw, in-line editing (mid-line cursor
-movement, history recall) is intentionally basic; compose or paste a line, read
-the exact bytes, then run it.
+This is a deliberately minimal, line-oriented first version. Backspace works, but
+because the display neutralizes the escapes readline uses to redraw, richer
+in-line editing (mid-line cursor movement, history recall) is intentionally
+basic; compose or paste a line, read the exact bytes, then run it.
 
 ## Run
 
