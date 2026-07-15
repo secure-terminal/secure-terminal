@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QMenu,
 )
 
-from secure_terminal import settings
+from secure_terminal import settings, session
 from secure_terminal.terminal import (
     SecureTerminal, THEMES, DISPLAY_MODES, tui_available,
 )
@@ -100,6 +100,8 @@ class MainWindow(QMainWindow):
             self._paste_delay = 3
         self._default_tui = cfg.get('tui') == 'true'
         self._default_allow_title = cfg.get('allow_title') == 'true'
+        # session persistence is on unless explicitly disabled
+        self._persist_session = cfg.get('persist_session') != 'false'
 
         self.tabs = QTabWidget(self)
         self.tabs.setTabsClosable(True)
@@ -118,9 +120,17 @@ class MainWindow(QMainWindow):
         self._mode_actions = {}
         self._user_titles = {}       # term -> user-set tab name
         self._prog_titles = {}       # term -> program (OSC) title
+        self._tab_colors = {}        # term -> tab colour name (for persistence)
         self._build_menu()
         self._build_toolbar()
-        self.new_tab()
+
+        # restore the previous session (tabs + scrollback) if enabled
+        restored = session.load() if self._persist_session else []
+        for info in restored:
+            if isinstance(info, dict):
+                self._restore_tab(info)
+        if self.tabs.count() == 0:
+            self.new_tab()
 
         # Enable Terminate only while a program (not just the shell) is running.
         # There is no event for a foreground-pgrp change, so poll cheaply.
@@ -130,6 +140,18 @@ class MainWindow(QMainWindow):
         self._update_terminate_enabled()
 
     # -- tabs, each its own shell over its own pseudo-terminal -----------------
+    def _add_tab(self, term):
+        term.zoom_step.connect(self._on_zoom_step)
+        term.shell_exited.connect(lambda t=term: self._on_shell_exited(t))
+        term.title_changed.connect(
+            lambda title, t=term: self._on_tab_title(t, title))
+        term.notified.connect(self._on_notify)
+        index = self.tabs.addTab(term, 'shell')
+        self.tabs.setCurrentIndex(index)
+        self._sync_chrome_to_tab()
+        term.setFocus()
+        return index
+
     def new_tab(self, command=None):
         term = SecureTerminal(tui=self._default_tui, command=command or None)
         term.apply_theme(self._default_theme)
@@ -139,14 +161,36 @@ class MainWindow(QMainWindow):
         term.apply_scrollback(self._scrollback)
         term.apply_paste_delay(self._paste_delay)
         term.apply_allow_title(self._default_allow_title)
-        term.zoom_step.connect(self._on_zoom_step)
-        term.shell_exited.connect(lambda t=term: self._on_shell_exited(t))
-        term.title_changed.connect(lambda title, t=term: self._on_tab_title(t, title))
-        term.notified.connect(self._on_notify)
-        index = self.tabs.addTab(term, 'shell')
-        self.tabs.setCurrentIndex(index)
-        self._sync_chrome_to_tab()
-        term.setFocus()
+        self._add_tab(term)
+
+    def _restore_tab(self, info):
+        """Recreate a tab from saved session state: its settings, name, colour
+        and scrollback history, under a fresh shell."""
+        history = info.get('text') if isinstance(info.get('text'), str) else ''
+        term = SecureTerminal(tui=bool(info.get('tui')), history=history)
+        theme = info.get('theme')
+        term.apply_theme(theme if theme in THEMES else self._default_theme)
+        try:
+            term.apply_zoom(int(info.get('zoom', self._default_zoom)))
+        except (TypeError, ValueError):
+            term.apply_zoom(self._default_zoom)
+        mode = info.get('mode')
+        term.apply_mode(mode if mode in DISPLAY_MODES else self._default_mode)
+        term.apply_colors(bool(info.get('colors')))
+        try:
+            term.apply_scrollback(int(info.get('scrollback', self._scrollback)))
+        except (TypeError, ValueError):
+            term.apply_scrollback(self._scrollback)
+        term.apply_paste_delay(self._paste_delay)
+        term.apply_allow_title(bool(info.get('allow_title')))
+        index = self._add_tab(term)
+        name = info.get('name')
+        if isinstance(name, str) and name:
+            self._user_titles[term] = name
+        color = info.get('color')
+        if isinstance(color, str) and color:
+            self.set_tab_color(index, QColor(color))
+        self._refresh_tab_label(term)
 
     def new_tab_running(self):
         command, ok = QInputDialog.getText(
@@ -161,6 +205,7 @@ class MainWindow(QMainWindow):
         term.shutdown()
         self._user_titles.pop(term, None)
         self._prog_titles.pop(term, None)
+        self._tab_colors.pop(term, None)
         self.tabs.removeTab(index)
         term.deleteLater()
         if self.tabs.count() == 0:
@@ -204,12 +249,15 @@ class MainWindow(QMainWindow):
     def set_tab_color(self, index, color):
         if index < 0:
             return
+        term = self.tabs.widget(index)
         if color is None or not color.isValid():
             self.tabs.setTabIcon(index, QIcon())
+            self._tab_colors.pop(term, None)
             return
         pixmap = QPixmap(12, 12)
         pixmap.fill(color)
         self.tabs.setTabIcon(index, QIcon(pixmap))
+        self._tab_colors[term] = color.name()
 
     def _tab_context_menu(self, point):
         index = self.tabs.tabBar().tabAt(point)
@@ -415,6 +463,7 @@ class MainWindow(QMainWindow):
             'paste_delay': str(self._paste_delay),
             'tui': 'true' if self._default_tui else 'false',
             'allow_title': 'true' if self._default_allow_title else 'false',
+            'persist_session': 'true' if self._persist_session else 'false',
         })
 
     # -- chrome ---------------------------------------------------------------
@@ -461,6 +510,21 @@ class MainWindow(QMainWindow):
             'program.')
         self.act_terminate.triggered.connect(self.terminate_foreground)
         file_menu.addAction(self.act_terminate)
+
+        file_menu.addSeparator()
+        self.act_persist = QAction('Restore &session on start', self,
+                                   checkable=True)
+        self.act_persist.setChecked(self._persist_session)
+        self.act_persist.setToolTip(
+            'Save the open tabs and their scrollback on exit and restore them '
+            'next time. The running programs are not resurrected; a fresh shell '
+            'starts under the restored history. Stored under ~/.local/state.')
+        self.act_persist.toggled.connect(self.set_persist_session)
+        file_menu.addAction(self.act_persist)
+
+        act_clear_session = QAction('&Clear Saved Session', self)
+        act_clear_session.triggered.connect(self.clear_saved_session)
+        file_menu.addAction(act_clear_session)
 
         file_menu.addSeparator()
         act_quit = QAction(QIcon.fromTheme('application-exit'), '&Quit', self)
@@ -624,8 +688,42 @@ class MainWindow(QMainWindow):
         self.zoom_box.valueChanged.connect(self.set_zoom)
         bar.addWidget(self.zoom_box)
 
+    # -- session persistence --------------------------------------------------
+    def _session_tabs(self):
+        tabs = []
+        for i in range(self.tabs.count()):
+            term = self.tabs.widget(i)
+            text = session.cap_text(term.toPlainText(), term.current_scrollback())
+            tabs.append({
+                'name': self._user_titles.get(term, ''),
+                'color': self._tab_colors.get(term, ''),
+                'theme': term.current_theme(),
+                'zoom': term.current_zoom(),
+                'mode': term.current_mode(),
+                'colors': term.colors_enabled(),
+                'tui': term.current_tui(),
+                'allow_title': term.allow_title_enabled(),
+                'scrollback': term.current_scrollback(),
+                'text': text,
+            })
+        return tabs
+
+    def set_persist_session(self, enabled):
+        self._persist_session = bool(enabled)
+        self.act_persist.setChecked(enabled)
+        if not enabled:
+            session.clear()
+        self._persist()
+
+    def clear_saved_session(self):
+        session.clear()
+
     # -- lifecycle ------------------------------------------------------------
     def closeEvent(self, event):
+        if self._persist_session:
+            session.save(self._session_tabs())
+        else:
+            session.clear()
         for i in range(self.tabs.count()):
             self.tabs.widget(i).shutdown()
         super().closeEvent(event)

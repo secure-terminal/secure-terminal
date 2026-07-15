@@ -132,7 +132,7 @@ class SecureTerminal(QPlainTextEdit):
     title_changed = pyqtSignal(str)
     notified = pyqtSignal(str)
 
-    def __init__(self, parent=None, command=None, tui=False):
+    def __init__(self, parent=None, command=None, tui=False, history=''):
         super().__init__(parent)
         self.setUndoRedoEnabled(False)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
@@ -180,6 +180,11 @@ class SecureTerminal(QPlainTextEdit):
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
         self._render_timer.timeout.connect(self._render_tui)
+
+        # restored scrollback from a previous session, shown as history above
+        # the fresh shell (line mode; a TUI tab repaints over it on first draw).
+        if history:
+            self._append(history if history.endswith('\n') else history + '\n')
 
         self._notifier = None
         self._fd = None

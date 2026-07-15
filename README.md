@@ -63,10 +63,17 @@ The safety model above does not cost you the usual conveniences:
   scrollback to a file. Because the buffer is already sanitized plain ASCII, the
   saved file is safe to open anywhere, unlike a normal terminal's raw log.
 - **Scrollback length** (View menu): 1,000 / 10,000 / 100,000 lines or Unlimited
-  (default). Kept in memory only, not written to disk.
-- **Persistent settings**: theme, zoom, unicode mode, colors and scrollback are
-  remembered between runs in `~/.config/secure-terminal/config`, a plain
-  KEY=value file you can edit by hand.
+  (default). Held in memory while running.
+- **Session restore** (File menu, on by default). On exit the open tabs -- their
+  names, colours, per-tab settings and scrollback -- are saved to
+  `~/.local/state/secure-terminal/session.json` and restored next launch, with a
+  fresh shell under the restored history. The running programs are not
+  resurrected. Turn it off, or clear the saved session, from the File menu; when
+  off, nothing is written. An unlimited tab's saved scrollback is capped so the
+  file cannot grow without bound.
+- **Persistent settings**: theme, zoom, unicode mode, colors, scrollback and the
+  other toggles are remembered between runs in `~/.config/secure-terminal/config`,
+  a plain KEY=value file you can edit by hand.
 - **Tabs you can name and colour.** Double-click a tab to rename it; right-click
   for rename, a colour, or close. Handy when several tabs each run a different
   TUI. A user name and a program-set title are kept separately (your name wins as
