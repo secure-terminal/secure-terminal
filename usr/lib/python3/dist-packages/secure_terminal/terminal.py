@@ -80,7 +80,7 @@ from PyQt6.QtWidgets import QPlainTextEdit
 from secure_terminal.sanitize import (
     THEMES, BASE_POINT_SIZE, ANSI_PALETTE, DISPLAY_MODES,
     ANSI_RE as _ANSI, SGR_RE as _SGR,
-    colors_allowed, too_close, render_output, sanitize_bytes, sanitize_paste,
+    colors_allowed, too_close, render_output, sanitize_paste,
     paste_findings, parse_sgr, tui_cell, sanitize_title,
 )
 
@@ -275,7 +275,7 @@ class SecureTerminal(QPlainTextEdit):
             fcntl.ioctl(self._fd, termios.TIOCSWINSZ,
                         struct.pack('HHHH', rows, cols, 0, 0))
         except OSError:
-            pass
+            pass            # a closed/invalid pty just misses this resize
 
     def _make_screen(self):
         cols, rows = self._grid_size()
@@ -521,13 +521,13 @@ class SecureTerminal(QPlainTextEdit):
             try:
                 os.close(self._fd)
             except OSError:
-                pass
+                pass        # already closed -> nothing to do
             self._fd = None
         if self._pid:
             try:
                 os.kill(self._pid, signal.SIGHUP)
             except OSError:
-                pass
+                pass        # child already gone -> nothing to hang up
             # SIGHUP is asynchronous, so the child may still be alive here; a
             # one-shot waitpid would return (0, 0) and reap nothing. Reaping is
             # therefore left to the process-wide SIGCHLD=SIG_IGN handler (see
@@ -537,7 +537,7 @@ class SecureTerminal(QPlainTextEdit):
             try:
                 os.waitpid(self._pid, os.WNOHANG)
             except (OSError, ChildProcessError):
-                pass
+                pass        # not yet dead / already reaped -> nothing to do
             self._pid = None
 
     def _append(self, text):
@@ -603,7 +603,7 @@ class SecureTerminal(QPlainTextEdit):
         try:
             os.write(self._fd, data)
         except OSError:
-            pass
+            pass            # child gone / pty closed -> input is dropped
 
     # -- signalling the foreground program ------------------------------------
     def _foreground_pgrp(self):
@@ -636,7 +636,7 @@ class SecureTerminal(QPlainTextEdit):
         try:
             os.killpg(pgrp, sig)
         except OSError:
-            pass
+            pass            # the group already exited -> nothing to signal
 
     def terminate_foreground(self):
         """Guaranteed escape hatch for a program that ignores Ctrl+C / Ctrl+\\
@@ -663,7 +663,7 @@ class SecureTerminal(QPlainTextEdit):
             try:
                 os.killpg(target, signal.SIGKILL)
             except OSError:
-                pass
+                pass        # exited between the check and the kill -> fine
         QTimer.singleShot(2000, _kill_survivor)
         return True
 

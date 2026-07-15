@@ -36,7 +36,7 @@ def load():
                 if key:
                     out[key] = value.strip()
     except OSError:
-        pass
+        pass                # no/unreadable config -> use defaults
     return out
 
 
@@ -54,4 +54,4 @@ def save(values):
             handle.write('\n'.join(lines) + '\n')
         os.replace(tmp, path)
     except OSError:
-        pass
+        pass                # a settings write is best-effort, never fatal

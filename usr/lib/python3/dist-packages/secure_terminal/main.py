@@ -373,7 +373,7 @@ class MainWindow(QMainWindow):
             with open(path, 'w', encoding='utf-8') as handle:
                 handle.write(term.toPlainText())
         except OSError:
-            pass
+            pass            # a failed save (bad path, no space) is not fatal
 
     def _persist(self):
         settings.save({
@@ -604,7 +604,7 @@ def _install_signal_quit(app):
         try:
             signal.signal(sig, handler)
         except (OSError, ValueError, AttributeError):
-            pass
+            pass        # a signal not settable here stays at its default
     wake = QTimer(app)
     wake.timeout.connect(lambda: None)
     wake.start(200)
@@ -623,7 +623,7 @@ def main():
     try:
         signal.signal(signal.SIGCHLD, signal.SIG_IGN)
     except (OSError, ValueError, AttributeError):
-        pass
+        pass            # if we cannot auto-reap, tabs simply reap on exit
 
     window = MainWindow()
     window.show()

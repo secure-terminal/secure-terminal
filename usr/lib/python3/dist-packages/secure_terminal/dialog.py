@@ -12,13 +12,15 @@ really there before it reaches the shell. The Allow button is disabled for a few
 seconds so a stray Enter cannot auto-accept a hostile paste; Reject cancels.
 """
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QPlainTextEdit, QPushButton, QHBoxLayout, QVBoxLayout,
-    QGridLayout, QWidget,
+    QGridLayout,
 )
 
-from secure_terminal.terminal import render_output, paste_findings
+# import the pure helpers from the core, not from terminal, to avoid an import
+# cycle (terminal imports this dialog lazily for the paste warning).
+from secure_terminal.sanitize import render_output, paste_findings
 
 
 class PasteWarningDialog(QDialog):
