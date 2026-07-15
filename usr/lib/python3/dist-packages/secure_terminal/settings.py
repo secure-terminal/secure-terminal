@@ -21,6 +21,7 @@ high-numbered user file (99-user.conf) so its changes override the seeds.
 
 Loading is fully defensive: a missing/unreadable file, a malformed line or an
 unknown key never raises and never crashes; the value falls back to its default.
+Only these drop-in .conf files are read -- there is no legacy single-file config.
 """
 
 import os
@@ -50,13 +51,6 @@ def user_config_file():
     return os.path.join(_user_config_dir(), _USER_FILE)
 
 
-def _legacy_config_file():
-    # the pre-drop-in single file, still read for backward compatibility
-    base = os.environ.get('XDG_CONFIG_HOME') or os.path.join(
-        os.path.expanduser('~'), '.config')
-    return os.path.join(base, _APP, 'config')
-
-
 def config_path():
     """Backward-compatible alias: the file the app writes to."""
     return user_config_file()
@@ -80,8 +74,6 @@ def _parse_into(path, out):
 def load():
     """Merge every *.conf drop-in into a dict of str -> str. Never raises."""
     out = {}
-    # legacy single file first, so a user drop-in or the app file overrides it
-    _parse_into(_legacy_config_file(), out)
     for directory in config_dirs():        # lowest -> highest precedence
         try:
             files = sorted(glob.glob(os.path.join(directory, '*.conf')))
