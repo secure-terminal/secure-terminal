@@ -46,6 +46,7 @@ class MainWindow(QMainWindow):
         self._default_theme = 'dark'
         self._default_zoom = 100
         self._default_mode = 'strip'
+        self._default_colors = False
 
         self.tabs = QTabWidget(self)
         self.tabs.setTabsClosable(True)
@@ -74,6 +75,7 @@ class MainWindow(QMainWindow):
         term.apply_theme(self._default_theme)
         term.apply_zoom(self._default_zoom)
         term.apply_mode(self._default_mode)
+        term.apply_colors(self._default_colors)
         term.zoom_step.connect(self._on_zoom_step)
         term.shell_exited.connect(lambda t=term: self._on_shell_exited(t))
         index = self.tabs.addTab(term, 'shell')
@@ -138,6 +140,7 @@ class MainWindow(QMainWindow):
         self.mode_box.blockSignals(True)
         self.mode_box.setCurrentIndex(self.mode_box.findData(mode))
         self.mode_box.blockSignals(False)
+        self.act_colors.setChecked(term.colors_enabled())
         self._update_terminate_enabled()
 
     # -- zoom: per current tab ------------------------------------------------
@@ -188,6 +191,12 @@ class MainWindow(QMainWindow):
 
     def _on_mode_box(self, index):
         self.set_mode(self.mode_box.itemData(index))
+
+    def set_colors(self, enabled):
+        term = self.current()
+        if term is not None:
+            term.apply_colors(enabled)
+        self.act_colors.setChecked(enabled)
 
     # -- chrome ---------------------------------------------------------------
     def _build_menu(self):
@@ -274,6 +283,16 @@ class MainWindow(QMainWindow):
             mode_menu.addAction(act)
             self._mode_actions[key] = act
 
+        view_menu.addSeparator()
+        self.act_colors = QAction('Ansi &Colors', self, checkable=True)
+        self.act_colors.setChecked(self._default_colors)
+        self.act_colors.setToolTip(
+            'Render a safe subset of ANSI colors (16-color SGR) in the current '
+            'tab. Off by default; contrast-guarded so text can never be painted '
+            'invisibly, and forced off by NO_COLOR or TERM=dumb.')
+        self.act_colors.toggled.connect(self.set_colors)
+        view_menu.addAction(self.act_colors)
+
     def _build_toolbar(self):
         bar = QToolBar('Main', self)
         bar.setMovable(False)
@@ -302,6 +321,7 @@ class MainWindow(QMainWindow):
             'Show (render legitimate unicode), or Reveal (as <U+XXXX> to inspect)')
         self.mode_box.currentIndexChanged.connect(self._on_mode_box)
         bar.addWidget(self.mode_box)
+        bar.addAction(self.act_colors)
         bar.addSeparator()
 
         bar.addWidget(QLabel('Zoom ', bar))

@@ -61,8 +61,39 @@ import signal
 import codecs
 
 from PyQt6.QtCore import QSocketNotifier, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QTextCursor, QColor, QPalette
+from PyQt6.QtGui import QFont, QTextCursor, QColor, QPalette, QTextCharFormat
 from PyQt6.QtWidgets import QPlainTextEdit
+
+# Standard 16-colour ANSI palette (xterm-ish); indexes 0-7 normal, 8-15 bright.
+ANSI_PALETTE = [
+    '#000000', '#cd0000', '#00cd00', '#cdcd00',
+    '#0000ee', '#cd00cd', '#00cdcd', '#e5e5e5',
+    '#7f7f7f', '#ff0000', '#00ff00', '#ffff00',
+    '#5c5cff', '#ff00ff', '#00ffff', '#ffffff',
+]
+
+
+def colors_allowed():
+    """False when the environment says never colour -- NO_COLOR is set (per the
+    no-color.org spec: presence, any value) or the outer TERM is 'dumb'. Colours
+    are opt-in per tab anyway; this lets the environment force them off."""
+    if os.environ.get('NO_COLOR'):
+        return False
+    if os.environ.get('TERM', '') == 'dumb':
+        return False
+    return True
+
+
+def _luminance(color):
+    return 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+
+
+def _too_close(a, b):
+    """True when two colours are so close that text would be near-invisible --
+    the guard that stops a program painting black-on-black. Kept low so ordinary
+    colours (e.g. red on a near-black background) are still allowed; it only
+    catches genuinely unreadable, deceptive combinations."""
+    return abs(_luminance(a) - _luminance(b)) < 30
 
 # name -> (background, foreground). "dark" is white-on-black, "light" is the
 # reverse; both are plain, high-contrast, no syntax coloring.
@@ -87,6 +118,10 @@ _ANSI = re.compile(
     r'|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?'
     r'|\x1b[@-Z\\-_]'
 )
+
+# SGR: ESC [ <params> m -- the only escape sequence honored, and only when
+# colours are enabled. Everything else is still stripped.
+_SGR = re.compile(r'\x1b\[([0-9;]*)m')
 
 
 def render_output(text, mode='strip'):
@@ -158,6 +193,10 @@ class SecureTerminal(QPlainTextEdit):
         self._mode = 'strip'
         self._decoder = codecs.getincrementaldecoder('utf-8')('replace')
 
+        # optional ANSI colours (off by default); SGR parser state.
+        self._colors = False
+        self._sgr_reset()
+
         self._notifier = None
         self._fd = None
         self._pid = None
@@ -194,6 +233,100 @@ class SecureTerminal(QPlainTextEdit):
 
     def current_mode(self):
         return self._mode
+
+    # -- optional ANSI colours ------------------------------------------------
+    def apply_colors(self, enabled):
+        self._colors = bool(enabled)
+        self._sgr_reset()
+
+    def colors_enabled(self):
+        return self._colors
+
+    def _effective_colors(self):
+        return self._colors and colors_allowed()
+
+    def _sgr_reset(self):
+        self._sgr_fg = None      # palette index, or None for the default
+        self._sgr_bg = None
+        self._sgr_bold = False
+
+    def _apply_sgr(self, param_str):
+        nums = [int(p) if p.isdigit() else 0
+                for p in (param_str.split(';') if param_str else ['0'])]
+        i = 0
+        while i < len(nums):
+            n = nums[i]
+            if n == 0:
+                self._sgr_reset()
+            elif n == 1:
+                self._sgr_bold = True
+            elif n == 22:
+                self._sgr_bold = False
+            elif 30 <= n <= 37:
+                self._sgr_fg = n - 30
+            elif 90 <= n <= 97:
+                self._sgr_fg = n - 90 + 8
+            elif n == 39:
+                self._sgr_fg = None
+            elif 40 <= n <= 47:
+                self._sgr_bg = n - 40
+            elif 100 <= n <= 107:
+                self._sgr_bg = n - 100 + 8
+            elif n == 49:
+                self._sgr_bg = None
+            elif n in (38, 48):
+                # 8-bit (5;n) and 24-bit (2;r;g;b) colours: consume the extra
+                # parameters and fall back to the default (not in the safe set).
+                if i + 1 < len(nums) and nums[i + 1] == 5:
+                    i += 2
+                elif i + 1 < len(nums) and nums[i + 1] == 2:
+                    i += 4
+            i += 1
+
+    def _current_format(self):
+        """Build the QTextCharFormat for the current SGR state, guarding against
+        an unreadable foreground/background combination."""
+        fmt = QTextCharFormat()
+        if self._sgr_fg is None and self._sgr_bg is None and not self._sgr_bold:
+            return fmt
+        base_bg, base_fg = THEMES.get(self._theme, THEMES['dark'])
+        fg = QColor(ANSI_PALETTE[self._sgr_fg]) if self._sgr_fg is not None \
+            else QColor(base_fg)
+        bg = QColor(ANSI_PALETTE[self._sgr_bg]) if self._sgr_bg is not None \
+            else None
+        eff_bg = bg if bg is not None else QColor(base_bg)
+        if _too_close(fg, eff_bg):
+            fg = QColor(base_fg)          # never let the text vanish
+            if bg is not None and _too_close(fg, bg):
+                bg = None                 # base text collides with the bg -> drop it
+        fmt.setForeground(fg)
+        if bg is not None:
+            fmt.setBackground(bg)
+        if self._sgr_bold:
+            fmt.setFontWeight(QFont.Weight.Bold)
+        return fmt
+
+    def _render_runs(self, text):
+        """Turn decoded output into a list of (display_text, format) runs. With
+        colours off there is a single default-format run; with colours on the
+        text is split at each SGR sequence and each run carries its colour."""
+        if not self._effective_colors():
+            return [(render_output(text, self._mode), None)]
+        runs = []
+        pos = 0
+        for m in _ANSI.finditer(text):
+            seg = text[pos:m.start()]
+            if seg:
+                runs.append((render_output(seg, self._mode),
+                             self._current_format()))
+            sgr = _SGR.fullmatch(m.group())
+            if sgr:
+                self._apply_sgr(sgr.group(1))
+            pos = m.end()
+        seg = text[pos:]
+        if seg:
+            runs.append((render_output(seg, self._mode), self._current_format()))
+        return runs
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -233,7 +366,7 @@ class SecureTerminal(QPlainTextEdit):
                 self._notifier.setEnabled(False)
             self.shell_exited.emit()
             return
-        self._append(render_output(self._decoder.decode(data), self._mode))
+        self._append_runs(self._render_runs(self._decoder.decode(data)))
 
     def shutdown(self):
         """Detach the notifier, close the master fd and hang up the child. Used
@@ -265,55 +398,59 @@ class SecureTerminal(QPlainTextEdit):
             self._pid = None
 
     def _append(self, text):
-        if not text:
-            return
-        # CRLF is just a line ending: the pty maps every "\n" to "\r\n" on
-        # output, so a carriage return glued to a newline carries no cursor
-        # meaning and must NOT redraw the line -- collapse it first.
-        text = text.replace('\r\n', '\n')
+        self._append_runs([(text, None)])
+
+    def _append_runs(self, runs):
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        # Fast path: ordinary output now carries no cursor controls -> append.
-        if '\x08' not in text and '\r' not in text:
-            cursor.insertText(text)
-            self.setTextCursor(cursor)
-            self.ensureCursorVisible()
-            return
-        # Slow path: honor the two line-local cursor controls the shell's line
-        # editor emits, with terminal overwrite semantics. Backspace (0x08)
-        # moves the cursor one cell left; a bare carriage return (0x0D) moves it
-        # to column 0; a printable character OVERWRITES the cell under the cursor
-        # (a real terminal never inserts-and-shifts) and only appends at the end
-        # of the line. All of it is bounded to the current line -- a program can
-        # never reach an earlier line or the scrollback -- and there is still no
-        # vertical or absolute cursor movement, because those arrive as escape
-        # sequences, which are stripped. U+2029 is Qt's block (newline) separator.
         move = QTextCursor.MoveOperation
         keep = QTextCursor.MoveMode.KeepAnchor
         sep = 0x2029
-        for ch in text:
-            if ch == '\n':
-                cursor.movePosition(move.EndOfBlock)
-                cursor.insertText('\n')
-            elif ch == '\r':
-                cursor.movePosition(move.StartOfBlock)
-            elif ch == '\x08':
-                probe = QTextCursor(cursor)
-                probe.movePosition(move.Left, keep)
-                sel = probe.selectedText()
-                if sel and ord(sel[0]) != sep:
-                    cursor.movePosition(move.Left)
-            else:
-                probe = QTextCursor(cursor)
-                probe.movePosition(move.Right, keep)
-                sel = probe.selectedText()
-                if sel and ord(sel[0]) != sep:
-                    # overwrite the cell under the cursor: select it with the
-                    # main cursor and replace, so the cursor stays consistent.
-                    cursor.movePosition(move.Right, keep)
-                    cursor.insertText(ch)
+        default_fmt = QTextCharFormat()
+        for text, fmt in runs:
+            if not text:
+                continue
+            if fmt is None:
+                fmt = default_fmt
+            # CRLF is just a line ending: the pty maps every "\n" to "\r\n" on
+            # output, so a carriage return glued to a newline carries no cursor
+            # meaning and must NOT redraw the line -- collapse it first.
+            text = text.replace('\r\n', '\n')
+            # Fast path: ordinary output carries no cursor controls -> append.
+            if '\x08' not in text and '\r' not in text:
+                cursor.insertText(text, fmt)
+                continue
+            # Slow path: honor the two line-local cursor controls the shell's
+            # line editor emits, with terminal overwrite semantics. Backspace
+            # (0x08) moves the cursor one cell left; a bare carriage return
+            # (0x0D) moves it to column 0; a printable character OVERWRITES the
+            # cell under the cursor (a real terminal never inserts-and-shifts)
+            # and only appends at the end of the line. All of it is bounded to
+            # the current line -- a program can never reach an earlier line or
+            # the scrollback -- and there is still no vertical or absolute cursor
+            # movement, because those arrive as escapes, which are stripped.
+            # U+2029 is Qt's block (newline) separator.
+            for ch in text:
+                if ch == '\n':
+                    cursor.movePosition(move.EndOfBlock)
+                    cursor.insertText('\n', fmt)
+                elif ch == '\r':
+                    cursor.movePosition(move.StartOfBlock)
+                elif ch == '\x08':
+                    probe = QTextCursor(cursor)
+                    probe.movePosition(move.Left, keep)
+                    sel = probe.selectedText()
+                    if sel and ord(sel[0]) != sep:
+                        cursor.movePosition(move.Left)
                 else:
-                    cursor.insertText(ch)         # end of line -> append
+                    probe = QTextCursor(cursor)
+                    probe.movePosition(move.Right, keep)
+                    sel = probe.selectedText()
+                    if sel and ord(sel[0]) != sep:
+                        cursor.movePosition(move.Right, keep)
+                        cursor.insertText(ch, fmt)   # overwrite the cell
+                    else:
+                        cursor.insertText(ch, fmt)   # end of line -> append
         self.setTextCursor(cursor)
         self.ensureCursorVisible()
 
