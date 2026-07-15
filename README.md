@@ -1,0 +1,66 @@
+# secure-terminal
+
+A terminal where paste is safe by construction.
+
+Paste a command copied from the web, or read text a program printed, without
+worrying about invisible characters, bidi overrides or escape sequences.
+secure-terminal accepts and displays plain printable ASCII by default and nothing
+else, so a pasted or printed lie has nothing to hide in.
+
+This is the problem [output lies](https://output-lies.github.io) documents,
+removed at the source.
+
+## How it stays safe
+
+- **ASCII-only display.** Program output is passed through a sanitizer: ANSI/OSC
+  escape sequences are removed and every byte that is not printable ASCII (plus
+  tab and newline) is dropped, the way `stcat` does for logs. A hostile filename,
+  a forged status line or a Trojan-Source comment cannot redraw or reorder what
+  you read.
+- **No escape-sequence interpretation.** There is no ANSI parser to attack. The
+  terminal advertises `TERM=dumb` and honors no cursor moves, colors, alternate
+  screens or OSC hyperlinks from the child process.
+- **Sanitized paste.** Pasted text is stripped to printable ASCII before it
+  reaches the shell, so invisible or bidi characters never enter your command
+  line.
+- **Tiny input allowlist.** You type printable ASCII plus a small set of control
+  keys that the pseudo-terminal turns into signals:
+
+  | Key | Signal |
+  |---|---|
+  | `Ctrl+C` | `SIGINT` |
+  | `Ctrl+Z` | `SIGTSTP` |
+  | `Ctrl+\` | `SIGQUIT` |
+  | `Ctrl+D` | EOF |
+
+  We only write the control byte; the kernel line discipline does the rest.
+
+## What it does not do (on purpose)
+
+- **No full-screen TUIs** (nano, vim, emacs, htop). Curses apps are driven
+  entirely by control and escape sequences, exactly what this terminal refuses
+  to parse. Run those in a normal terminal you already treat as untrusted.
+- **No non-ASCII by default.** Additional character sets may become opt-in much
+  later, always as an explicit allowlist, never a general decoder.
+
+This is a deliberately minimal, line-oriented first version. Because the display
+neutralizes the escapes readline uses to redraw, in-line editing (mid-line cursor
+movement, history recall) is intentionally basic; compose or paste a line, read
+the exact bytes, then run it.
+
+## Run
+
+```
+secure-terminal
+```
+
+## Build
+
+Standard Debian source package (`debhelper`); depends on `python3-pyqt6`.
+
+```
+dpkg-buildpackage -us -uc -b
+```
+
+Built with Python and Qt6. AI-assisted; see
+[org-ai-assisted](https://github.com/org-ai-assisted).

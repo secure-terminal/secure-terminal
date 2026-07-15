@@ -1,0 +1,6 @@
+secure-terminal (0.0.1-1) unstable; urgency=medium
+
+  * Initial release: minimal line-oriented terminal with ASCII-only display,
+    sanitized paste, and the signal keys Ctrl+C / Ctrl+Z / Ctrl+\ / Ctrl+D.
+
+ -- ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>  Wed, 15 Jul 2026 00:00:00 +0000

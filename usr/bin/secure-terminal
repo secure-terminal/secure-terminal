@@ -1,0 +1,13 @@
+#!/usr/bin/python3 -su
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+import sys
+
+from secure_terminal.main import main
+
+if __name__ == '__main__':
+    sys.exit(main())
