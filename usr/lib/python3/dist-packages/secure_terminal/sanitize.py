@@ -121,6 +121,20 @@ def sanitize_paste(text):
     return ''.join(out)
 
 
+def sanitize_title(text, limit=80):
+    """Reduce a program-supplied window title or notification to safe plain
+    ASCII: keep only printable ASCII (so no control, escape, bidi or homoglyph
+    can ride in through a title), collapse whitespace to single spaces, cap the
+    length."""
+    kept = []
+    for ch in (text or ''):
+        if 0x20 <= ord(ch) <= 0x7E:
+            kept.append(ch)
+        elif ch in '\t\n\r\f\v':
+            kept.append(' ')          # keep word boundaries, drop the control
+    return ' '.join(''.join(kept).split())[:limit]
+
+
 def tui_cell(ch, mode):
     """Sanitize a single screen cell's character for TUI-mode display. Keeps
     printable ASCII; renders a printable non-ASCII glyph only in 'show'/'reveal'

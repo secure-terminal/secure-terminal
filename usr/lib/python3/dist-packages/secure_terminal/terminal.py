@@ -81,8 +81,11 @@ from secure_terminal.sanitize import (
     THEMES, BASE_POINT_SIZE, ANSI_PALETTE, DISPLAY_MODES,
     ANSI_RE as _ANSI, SGR_RE as _SGR,
     colors_allowed, too_close, render_output, sanitize_bytes, sanitize_paste,
-    paste_findings, parse_sgr, tui_cell,
+    paste_findings, parse_sgr, tui_cell, sanitize_title,
 )
+
+# OSC 9 ";<text>" (BEL or ST terminated): the iTerm2-style desktop notification.
+_OSC9 = re.compile(rb'\x1b\]9;([^\x07\x1b]*)(?:\x07|\x1b\\)')
 
 
 def tui_available():
@@ -124,6 +127,9 @@ class SecureTerminal(QPlainTextEdit):
     shell_exited = pyqtSignal()
     # Ctrl+wheel over the widget asks the window to zoom by +1/-1 step
     zoom_step = pyqtSignal(int)
+    # a program set the title / sent a notification (only when allowed)
+    title_changed = pyqtSignal(str)
+    notified = pyqtSignal(str)
 
     def __init__(self, parent=None, command=None, tui=False):
         super().__init__(parent)
@@ -164,6 +170,12 @@ class SecureTerminal(QPlainTextEdit):
         self._screen = None
         self._stream = None
         self._fmt_cache = {}
+
+        # "modern terminal protocol": let a program set the title / notify.
+        # Off by default; only has an effect in TUI mode (line mode strips
+        # escapes). OSC 52 clipboard and OSC 8 hyperlinks stay blocked regardless.
+        self._allow_title = False
+        self._last_title = ''
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
         self._render_timer.timeout.connect(self._render_tui)
@@ -236,6 +248,12 @@ class SecureTerminal(QPlainTextEdit):
 
     def current_tui(self):
         return self._tui
+
+    def apply_allow_title(self, enabled):
+        self._allow_title = bool(enabled)
+
+    def allow_title_enabled(self):
+        return self._allow_title
 
     def tui_active(self):
         return getattr(self, '_tui', False) and tui_available()
@@ -474,8 +492,24 @@ class SecureTerminal(QPlainTextEdit):
             self._stream.feed(data)
             if not self._render_timer.isActive():
                 self._render_timer.start(16)     # coalesce bursts into ~60fps
+            if self._allow_title:
+                self._handle_title_and_notify(data)
             return
         self._append_runs(self._render_runs(self._decoder.decode(data)))
+
+    def _handle_title_and_notify(self, data):
+        """When the "modern protocol" setting is on, surface the program's title
+        (OSC 0/2, captured by pyte) and notifications (OSC 9). Everything is
+        sanitized to plain ASCII first, so a title or notification cannot carry
+        an escape, control or homoglyph."""
+        title = sanitize_title(getattr(self._screen, 'title', ''))
+        if title and title != self._last_title:
+            self._last_title = title
+            self.title_changed.emit(title)
+        for match in _OSC9.finditer(data):
+            text = sanitize_title(match.group(1).decode('ascii', 'ignore'))
+            if text:
+                self.notified.emit(text)
 
     def shutdown(self):
         """Detach the notifier, close the master fd and hang up the child. Used

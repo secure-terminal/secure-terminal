@@ -9,10 +9,13 @@ import signal
 import sys
 
 from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QIcon
+from PyQt6.QtGui import (
+    QAction, QActionGroup, QKeySequence, QIcon, QColor, QPixmap,
+)
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QToolBar, QSpinBox, QLabel,
-    QWidget, QSizePolicy, QComboBox, QFileDialog,
+    QWidget, QSizePolicy, QComboBox, QFileDialog, QInputDialog, QColorDialog,
+    QMenu,
 )
 
 from secure_terminal import settings
@@ -96,6 +99,7 @@ class MainWindow(QMainWindow):
         except (KeyError, ValueError):
             self._paste_delay = 3
         self._default_tui = cfg.get('tui') == 'true'
+        self._default_allow_title = cfg.get('allow_title') == 'true'
 
         self.tabs = QTabWidget(self)
         self.tabs.setTabsClosable(True)
@@ -103,6 +107,11 @@ class MainWindow(QMainWindow):
         self.tabs.setDocumentMode(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(self._sync_chrome_to_tab)
+        # double-click a tab to rename it; right-click for rename/colour/close.
+        self.tabs.tabBarDoubleClicked.connect(self.rename_tab)
+        bar = self.tabs.tabBar()
+        bar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        bar.customContextMenuRequested.connect(self._tab_context_menu)
         self.setCentralWidget(self.tabs)
 
         self._theme_actions = {}
@@ -127,8 +136,11 @@ class MainWindow(QMainWindow):
         term.apply_colors(self._default_colors)
         term.apply_scrollback(self._scrollback)
         term.apply_paste_delay(self._paste_delay)
+        term.apply_allow_title(self._default_allow_title)
         term.zoom_step.connect(self._on_zoom_step)
         term.shell_exited.connect(lambda t=term: self._on_shell_exited(t))
+        term.title_changed.connect(lambda title, t=term: self._on_tab_title(t, title))
+        term.notified.connect(self._on_notify)
         index = self.tabs.addTab(term, 'shell')
         self.tabs.setCurrentIndex(index)
         self._sync_chrome_to_tab()
@@ -148,6 +160,46 @@ class MainWindow(QMainWindow):
         index = self.tabs.indexOf(term)
         if index != -1:
             self.close_tab(index)
+
+    # -- tab label: rename + colour -------------------------------------------
+    def rename_tab(self, index):
+        if index < 0:
+            return
+        name, ok = QInputDialog.getText(
+            self, 'Rename Tab', 'Tab name:', text=self.tabs.tabText(index))
+        if ok:
+            # plain text only; setTabText does not interpret markup
+            self.tabs.setTabText(index, name.strip() or 'shell')
+
+    def set_tab_color(self, index, color):
+        if index < 0:
+            return
+        if color is None or not color.isValid():
+            self.tabs.setTabIcon(index, QIcon())
+            return
+        pixmap = QPixmap(12, 12)
+        pixmap.fill(color)
+        self.tabs.setTabIcon(index, QIcon(pixmap))
+
+    def _tab_context_menu(self, point):
+        index = self.tabs.tabBar().tabAt(point)
+        if index < 0:
+            return
+        menu = QMenu(self)
+        menu.addAction('Rename...', lambda: self.rename_tab(index))
+        color_menu = menu.addMenu('Colour')
+        for name, value in (('Red', '#d83933'), ('Green', '#1f8a54'),
+                            ('Blue', '#3b82f6'), ('Yellow', '#e5a50a'),
+                            ('Purple', '#8b5cf6')):
+            color_menu.addAction(
+                name, lambda v=value: self.set_tab_color(index, QColor(v)))
+        color_menu.addAction(
+            'Custom...',
+            lambda: self.set_tab_color(index, QColorDialog.getColor(parent=self)))
+        color_menu.addAction('Clear', lambda: self.set_tab_color(index, None))
+        menu.addSeparator()
+        menu.addAction('Close Tab', lambda: self.close_tab(index))
+        menu.exec(self.tabs.tabBar().mapToGlobal(point))
 
     def terminate_foreground(self):
         term = self.current()
@@ -193,6 +245,7 @@ class MainWindow(QMainWindow):
         self.mode_box.blockSignals(False)
         self.act_colors.setChecked(term.colors_enabled())
         self.act_tui.setChecked(term.current_tui())
+        self.act_title.setChecked(term.allow_title_enabled())
         self._update_tui_indicator()
         self._update_terminate_enabled()
 
@@ -276,6 +329,23 @@ class MainWindow(QMainWindow):
         active = term is not None and term.tui_active()
         self.tui_dot_action.setVisible(active)
 
+    def set_allow_title(self, enabled):
+        term = self.current()
+        if term is not None:
+            term.apply_allow_title(enabled)
+        self._default_allow_title = bool(enabled)
+        self.act_title.setChecked(enabled)
+        self._persist()
+
+    def _on_tab_title(self, term, title):
+        index = self.tabs.indexOf(term)
+        if index != -1 and title:
+            self.tabs.setTabText(index, title)
+
+    def _on_notify(self, text):
+        # passive, non-intrusive: a timed status-bar message, already ASCII-safe
+        self.statusBar().showMessage('Notification: ' + text, 6000)
+
     def set_scrollback(self, lines):
         self._scrollback = int(lines)
         for i in range(self.tabs.count()):
@@ -314,6 +384,7 @@ class MainWindow(QMainWindow):
             'scrollback': str(self._scrollback),
             'paste_delay': str(self._paste_delay),
             'tui': 'true' if self._default_tui else 'false',
+            'allow_title': 'true' if self._default_allow_title else 'false',
         })
 
     # -- chrome ---------------------------------------------------------------
@@ -429,6 +500,17 @@ class MainWindow(QMainWindow):
             self.act_tui.setText('TUI mode (needs python3-pyte)')
         self.act_tui.toggled.connect(self.set_tui)
         view_menu.addAction(self.act_tui)
+
+        self.act_title = QAction('Allow program &title / notifications', self,
+                                 checkable=True)
+        self.act_title.setChecked(self._default_allow_title)
+        self.act_title.setToolTip(
+            'Let a program set the tab title (OSC 0/2) and send notifications '
+            '(OSC 9), the modern terminal protocol. Off by default; only takes '
+            'effect in TUI mode. Titles and notifications are sanitized to plain '
+            'ASCII. Clipboard-write and hyperlink escapes stay blocked.')
+        self.act_title.toggled.connect(self.set_allow_title)
+        view_menu.addAction(self.act_title)
 
         view_menu.addSeparator()
         sb_menu = view_menu.addMenu('&Scrollback')

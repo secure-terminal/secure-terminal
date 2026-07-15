@@ -67,6 +67,13 @@ The safety model above does not cost you the usual conveniences:
 - **Persistent settings**: theme, zoom, unicode mode, colors and scrollback are
   remembered between runs in `~/.config/secure-terminal/config`, a plain
   KEY=value file you can edit by hand.
+- **Tabs you can name and colour.** Double-click a tab to rename it; right-click
+  for rename, a colour, or close. Handy when several tabs each run a different
+  TUI.
+- **Optional title / notifications** (View menu, per tab, default off). When on,
+  and only in TUI mode, a program may set the tab title (OSC 0/2) and send
+  notifications (OSC 9), both sanitized to plain ASCII first. Clipboard-write
+  (OSC 52) and hyperlink (OSC 8) escapes stay blocked either way.
 - **Menu bar** for the same actions, discoverable rather than memorized.
 
 ## TUI mode (opt-in, run full-screen programs)
