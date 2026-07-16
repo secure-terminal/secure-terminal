@@ -144,6 +144,8 @@ class MainWindow(QMainWindow):
     # -- tabs, each its own shell over its own pseudo-terminal -----------------
     def _add_tab(self, term):
         term.zoom_step.connect(self._on_zoom_step)
+        term.tab_step.connect(self._on_tab_step)
+        term.tab_move.connect(self._on_tab_move)
         term.shell_exited.connect(lambda t=term: self._on_shell_exited(t))
         term.title_changed.connect(
             lambda title, t=term: self._on_tab_title(t, title))
@@ -153,6 +155,26 @@ class MainWindow(QMainWindow):
         self._sync_chrome_to_tab()
         term.setFocus()
         return index
+
+    def _on_tab_step(self, step):
+        """Ctrl+PageUp/Down: move to the previous/next tab, wrapping around."""
+        count = self.tabs.count()
+        if count > 1:
+            self.tabs.setCurrentIndex((self.tabs.currentIndex() + step) % count)
+
+    def _on_tab_move(self, step):
+        """Ctrl+Shift+PageUp/Down: move the current tab left/right, wrapping."""
+        count = self.tabs.count()
+        if count > 1:
+            i = self.tabs.currentIndex()
+            self.tabs.tabBar().moveTab(i, (i + step) % count)
+
+    def _goto_tab(self, index):
+        """Alt+1..9: jump straight to a tab by position (Alt+9 = last)."""
+        if index == 8 or index >= self.tabs.count():
+            index = self.tabs.count() - 1
+        if 0 <= index < self.tabs.count():
+            self.tabs.setCurrentIndex(index)
 
     def new_tab(self, command=None):
         term = SecureTerminal(tui=self._default_tui, command=command or None)
@@ -305,6 +327,17 @@ class MainWindow(QMainWindow):
         if term is not None:
             term.paste()
             term.setFocus()
+
+    def select_all(self):
+        term = self.current()
+        if term is not None:
+            term.selectAll()
+
+    def toggle_fullscreen(self, on):
+        if on:
+            self.showFullScreen()
+        else:
+            self.showNormal()
 
     # -- keep the toolbar/menu showing the CURRENT tab's theme and zoom -------
     def _sync_chrome_to_tab(self, *_args):
@@ -545,6 +578,12 @@ class MainWindow(QMainWindow):
         self.act_paste.triggered.connect(self.paste_clipboard)
         edit_menu.addAction(self.act_paste)
 
+        self.act_select_all = QAction(QIcon.fromTheme('edit-select-all'),
+                                      'Select &All', self)
+        self.act_select_all.setShortcut(QKeySequence('Ctrl+Shift+A'))
+        self.act_select_all.triggered.connect(self.select_all)
+        edit_menu.addAction(self.act_select_all)
+
         view_menu = bar.addMenu('&View')
         act_zin = QAction(QIcon.fromTheme('zoom-in'), 'Zoom &In', self)
         act_zin.setShortcut(QKeySequence.StandardKey.ZoomIn)
@@ -561,6 +600,13 @@ class MainWindow(QMainWindow):
         act_zreset.setShortcut(QKeySequence('Ctrl+0'))
         act_zreset.triggered.connect(self.zoom_reset)
         view_menu.addAction(act_zreset)
+
+        view_menu.addSeparator()
+        self.act_full = QAction(QIcon.fromTheme('view-fullscreen'),
+                                '&Full Screen', self, checkable=True)
+        self.act_full.setShortcut(QKeySequence('F11'))
+        self.act_full.triggered.connect(self.toggle_fullscreen)
+        view_menu.addAction(self.act_full)
 
         view_menu.addSeparator()
         theme_menu = view_menu.addMenu('&Theme')
@@ -586,7 +632,7 @@ class MainWindow(QMainWindow):
             self._mode_actions[key] = act
 
         view_menu.addSeparator()
-        self.act_colors = QAction('Ansi &Colors', self, checkable=True)
+        self.act_colors = QAction('&Colors', self, checkable=True)
         self.act_colors.setChecked(self._default_colors)
         self.act_colors.setToolTip(
             'Render a safe subset of ANSI colors (16-color SGR) in the current '
@@ -595,8 +641,7 @@ class MainWindow(QMainWindow):
         self.act_colors.toggled.connect(self.set_colors)
         view_menu.addAction(self.act_colors)
 
-        self.act_tui = QAction('&TUI mode (run full-screen programs)', self,
-                               checkable=True)
+        self.act_tui = QAction('&TUI mode', self, checkable=True)
         self.act_tui.setChecked(self._default_tui)
         self.act_tui.setEnabled(tui_available())
         self.act_tui.setToolTip(TUI_TOOLTIP)
@@ -636,6 +681,23 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda _checked, n=secs: self.set_paste_delay(n))
             pd_group.addAction(act)
             pd_menu.addAction(act)
+
+        tabs_menu = bar.addMenu('Ta&bs')
+        act_next_tab = QAction('&Next Tab', self)
+        act_next_tab.triggered.connect(lambda: self._on_tab_step(1))
+        tabs_menu.addAction(act_next_tab)
+        act_prev_tab = QAction('&Previous Tab', self)
+        act_prev_tab.triggered.connect(lambda: self._on_tab_step(-1))
+        tabs_menu.addAction(act_prev_tab)
+        # Ctrl+PageUp/Down (switch) and Ctrl+Shift+PageUp/Down (move) are handled
+        # in the terminal widget so they win over a full-screen program; the menu
+        # entries above stay unbound to avoid firing them twice.
+        tabs_menu.addSeparator()
+        for _n in range(1, 10):
+            act = QAction('Tab &%d' % _n, self)
+            act.setShortcut(QKeySequence('Alt+%d' % _n))
+            act.triggered.connect(lambda _c=False, i=_n - 1: self._goto_tab(i))
+            tabs_menu.addAction(act)
 
         settings_menu = bar.addMenu('&Settings')
         act_locations = QAction('&Folders & Files...', self)

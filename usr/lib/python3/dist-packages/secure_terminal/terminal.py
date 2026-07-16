@@ -128,6 +128,10 @@ class SecureTerminal(QPlainTextEdit):
     shell_exited = pyqtSignal()
     # Ctrl+wheel over the widget asks the window to zoom by +1/-1 step
     zoom_step = pyqtSignal(int)
+    # Ctrl+PageUp/Down asks the window to switch tabs; Ctrl+Shift+PageUp/Down to
+    # move the current tab. Handled at the widget because it owns the keyboard.
+    tab_step = pyqtSignal(int)
+    tab_move = pyqtSignal(int)
     # a program set the title / sent a notification (only when allowed)
     title_changed = pyqtSignal(str)
     notified = pyqtSignal(str)
@@ -731,6 +735,15 @@ class SecureTerminal(QPlainTextEdit):
         mods = event.modifiers()
         ctrl = mods & Qt.KeyboardModifier.ControlModifier
         shift = mods & Qt.KeyboardModifier.ShiftModifier
+
+        # Tab navigation is a window action and must work in both modes (even
+        # while a full-screen program owns the keyboard): Ctrl+PageUp/Down switch
+        # tabs, Ctrl+Shift+PageUp/Down move the current tab. Handled here, before
+        # the TUI dispatch, so the program never receives them.
+        if ctrl and key in (Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
+            step = -1 if key == Qt.Key.Key_PageUp else 1
+            (self.tab_move if shift else self.tab_step).emit(step)
+            return
 
         # In TUI mode the running program owns the keyboard: Ctrl+Shift+<key>
         # still reaches the window shortcuts, but everything else is encoded as
