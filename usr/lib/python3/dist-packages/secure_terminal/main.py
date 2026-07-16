@@ -261,6 +261,7 @@ class MainWindow(QMainWindow):
         self._prog_titles = {}       # term -> program (OSC) title
         self._pre_tui_mode = {}      # term -> display mode to restore after TUI
         self._tab_colors = {}        # term -> tab colour name (for persistence)
+        self._advisories = {}        # term -> its pending advisory (banner text)
         self._syncing = False        # guard: programmatic chip sync vs user click
         # toolbar chip buttons, populated by _build_toolbar; empty here so a
         # _sync during _build_menu (which runs first) is a harmless no-op.
@@ -306,7 +307,7 @@ class MainWindow(QMainWindow):
         term.title_changed.connect(
             lambda title, t=term: self._on_tab_title(t, title))
         term.notified.connect(self._on_notify)
-        term.advise_signal.connect(self._show_advisory)
+        term.advise_signal.connect(lambda msg, t=term: self._on_advise(t, msg))
         index = self.tabs.addTab(term, term.cwd_basename() or 'shell')
         self.tabs.setCurrentIndex(index)
         # auto-colour the new tab so it differs from its neighbour, unless one is
@@ -355,13 +356,32 @@ class MainWindow(QMainWindow):
         close.setCursor(Qt.CursorShape.PointingHandCursor)
         close.setFocusPolicy(Qt.FocusPolicy.NoFocus)    # do not steal the caret
         close.setToolTip('Dismiss')
-        close.clicked.connect(lambda: frame.setVisible(False))
+        close.clicked.connect(self._dismiss_advisory)
         row.addWidget(close)
         return frame
 
-    def _show_advisory(self, message):
-        self._banner_label.setText(message)
-        self._banner.setVisible(True)
+    def _on_advise(self, term, message):
+        """A terminal raised an advisory. It belongs to THAT tab, so remember it
+        per-tab and only show the banner while its tab is current -- otherwise the
+        hint (e.g. "switch to TUI mode") would hang over an unrelated terminal."""
+        self._advisories[term] = message
+        if term is self.current():
+            self._refresh_banner()
+
+    def _dismiss_advisory(self):
+        """The X button: clear the current tab's advisory and hide the banner."""
+        self._advisories.pop(self.current(), None)
+        self._refresh_banner()
+
+    def _refresh_banner(self):
+        """Show the current tab's pending advisory, or hide the banner if it has
+        none. Called on every tab switch so the banner always matches the tab."""
+        message = self._advisories.get(self.current())
+        if message:
+            self._banner_label.setText(message)
+            self._banner.setVisible(True)
+        else:
+            self._banner.setVisible(False)
 
     def _on_tab_step(self, step):
         """Ctrl+PageUp/Down: move to the previous/next tab, wrapping around."""
@@ -602,6 +622,7 @@ class MainWindow(QMainWindow):
         self._user_titles.pop(term, None)
         self._prog_titles.pop(term, None)
         self._tab_colors.pop(term, None)
+        self._advisories.pop(term, None)
         self._tab_ids.pop(term, None)
         self.tabs.removeTab(index)
         term.deleteLater()
@@ -725,6 +746,7 @@ class MainWindow(QMainWindow):
         term = self.current()
         if term is None:
             return
+        self._refresh_banner()          # the banner follows the current tab
         self.zoom_box.blockSignals(True)
         self.zoom_box.setValue(term.current_zoom())
         self.zoom_box.blockSignals(False)

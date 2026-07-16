@@ -647,18 +647,24 @@ class SecureTerminal(QPlainTextEdit):
 
     def _fmt_from_key(self, key):
         """QTextCharFormat for a cell's SGR key (a sorted-items tuple), or the
-        default format for None. A (MARK_KEY, class, codepoint) key colours a
-        neutralized / revealed marking by its risk class (class None = no colour,
-        colored markings off) and carries the source code point so hover/click can
-        describe it. Cached; a theme change clears it."""
+        default format for None. A (MARK_KEY, colour, codepoint) key colours a
+        neutralized / revealed marking -- by its risk class (a class-name string),
+        by the program's own SGR (an items-tuple, when colored markings are off but
+        ANSI colours are on), or not at all (None) -- and carries the source code
+        point so hover/click can describe it. Cached; a theme change clears it."""
         if key is None:
             return QTextCharFormat()
         if isinstance(key, tuple) and len(key) == 3 and key[0] == MARK_KEY:
             fmt = self._line_fmt_cache.get(key)
             if fmt is None:
-                fmt = QTextCharFormat()
-                if key[1] is not None:
-                    fmt.setForeground(QColor(self.MARKING_COLORS[key[1]]))
+                color = key[1]
+                if isinstance(color, str):
+                    fmt = QTextCharFormat()
+                    fmt.setForeground(QColor(self.MARKING_COLORS[color]))
+                elif color:                   # the program's own SGR items-tuple
+                    fmt = self._format_for(dict(color))
+                else:
+                    fmt = QTextCharFormat()
                 fmt.setProperty(_CP_PROP, key[2])
                 self._line_fmt_cache[key] = fmt
             return fmt
@@ -1329,23 +1335,27 @@ class SecureTerminal(QPlainTextEdit):
         cursor = self.cursorForPosition(pos)
         doc = self.document()
         p = cursor.position()
-        # cursorForPosition snaps to a boundary, so the hovered cell is the char to
-        # the left or the right; probe both.
-        for start in (p, p - 1):
-            if start < 0 or start >= doc.characterCount() - 1:
-                continue
-            probe = QTextCursor(doc)
-            probe.setPosition(start)
-            probe.movePosition(QTextCursor.MoveOperation.NextCharacter,
-                               QTextCursor.MoveMode.KeepAnchor)
-            cp = probe.charFormat().property(_CP_PROP)
-            if cp is not None:
-                return int(cp)
-            text = probe.selectedText()
-            # a readable non-ASCII glyph (show mode) keeps no tag but IS its own
-            # code point; exclude Qt's block/line separators (U+2028/U+2029).
-            if len(text) == 1 and ord(text) > 0x7F and ord(text) not in (0x2028, 0x2029):
-                return ord(text)
+        # cursorForPosition snaps to the NEAREST insertion boundary, so the glyph
+        # under the point is on one side of it. Compare the point to that boundary
+        # to pick the correct single character -- never claim the adjacent glyph.
+        start = p if pos.x() >= self.cursorRect(cursor).x() else p - 1
+        if start < 0 or start >= doc.characterCount() - 1:
+            return None
+        probe = QTextCursor(doc)
+        probe.setPosition(start)
+        probe.movePosition(QTextCursor.MoveOperation.NextCharacter,
+                           QTextCursor.MoveMode.KeepAnchor)
+        cp = probe.charFormat().property(_CP_PROP)
+        if cp is not None:
+            return int(cp)
+        text = probe.selectedText()
+        # a readable non-ASCII glyph (show mode) keeps no tag but IS its own code
+        # point; skip Qt's block/line separators (U+2028/U+2029) and a lone UTF-16
+        # surrogate half (a point can land on either unit of an astral glyph).
+        if len(text) == 1:
+            o = ord(text)
+            if o > 0x7F and not 0xD800 <= o <= 0xDFFF and o not in (0x2028, 0x2029):
+                return o
         return None
 
     def event(self, e):
