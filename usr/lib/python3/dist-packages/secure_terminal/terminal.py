@@ -82,7 +82,7 @@ from secure_terminal.sanitize import (
     THEMES, BASE_POINT_SIZE, ANSI_PALETTE, DISPLAY_MODES,
     ANSI_RE as _ANSI, SGR_RE as _SGR,
     colors_allowed, too_close, render_output, sanitize_paste,
-    paste_findings, parse_sgr, tui_cell, sanitize_title,
+    paste_findings, parse_sgr, tui_cell, sanitize_title, apply_line_edits,
 )
 
 # OSC 9 ";<text>" (BEL or ST terminated): the iTerm2-style desktop notification.
@@ -157,8 +157,15 @@ class SecureTerminal(QPlainTextEdit):
         self._colors = False
         self._sgr_reset()
 
-        # scrollback limit in lines (0 = unlimited, the QPlainTextEdit default).
-        self._scrollback = 0
+        # Scrollback limit in lines. Default to a bounded window (like every
+        # mainstream terminal) so an endless flood cannot grow the document
+        # without bound; a config/apply_scrollback of 0 restores unlimited.
+        self._scrollback = 10000
+        self.setMaximumBlockCount(self._scrollback)
+        # A single logical line is hard-wrapped past this many characters, so a
+        # newline-free flood cannot build one pathologically long block (the
+        # QPlainTextEdit layout of which is quadratic).
+        self._MAX_LINE = 8192
 
         # seconds the paste-warning "Allow" button stays disabled.
         self._paste_delay = 3
@@ -556,7 +563,44 @@ class SecureTerminal(QPlainTextEdit):
     def _append(self, text):
         self._append_runs([(text, None)])
 
+    def _append_plain(self, text):
+        """Bulk line-mode append for uncolored output: resolve the line-editing
+        controls in Python (apply_line_edits) and write the result in a couple of
+        insertText calls, instead of walking a QTextCursor per character. This is
+        the path a flood takes, so it stays O(n) where the per-char path crawled;
+        _MAX_LINE hard-wraps a runaway line so a newline-free flood cannot build
+        one unbounded block."""
+        text = text.replace('\r\n', '\n')
+        cursor = self._out_cursor
+        if cursor is None:
+            cursor = self.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+        blk = cursor.block()
+        col = cursor.position() - blk.position()
+        completed, line, col = apply_line_edits(blk.text(), col, text, self._MAX_LINE)
+        edit = QTextCursor(cursor)
+        edit.setPosition(blk.position())
+        edit.movePosition(QTextCursor.MoveOperation.EndOfBlock,
+                          QTextCursor.MoveMode.KeepAnchor)
+        edit.removeSelectedText()            # clear the current (incomplete) line
+        edit.insertText('\n'.join(completed + [line]))
+        final_start = edit.position() - len(line)   # start of the new current line
+        cursor.setPosition(final_start + col)
+        self._out_cursor = cursor
+        self.setTextCursor(cursor)
+        self.ensureCursorVisible()
+
     def _append_runs(self, runs):
+        runs = [(text, fmt) for text, fmt in runs if text]
+        if not runs:
+            return
+        # Fast, bulk path for uncolored output -- the common case, and the one a
+        # flood arrives on (colours are opt-in). Resolve the line edits in Python
+        # and bulk-insert; only genuinely coloured runs fall through to the
+        # per-character overwrite path below.
+        if all(fmt is None for _, fmt in runs):
+            self._append_plain(''.join(text for text, _ in runs))
+            return
         # The output cursor persists across writes, like a real terminal cursor.
         # A program may leave it mid-line -- zsh, for one, redraws its prompt with
         # a carriage return and leaves trailing fill spaces beyond the cursor --
