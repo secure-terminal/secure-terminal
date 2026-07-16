@@ -741,6 +741,15 @@ class SecureTerminal(QPlainTextEdit):
             self._write(b'\t')
             return
 
+        # Scrollback navigation. In line mode there is no full-screen program to
+        # own these keys, so scroll the buffer: Shift+PageUp/Down a page and
+        # Shift+Home/End to the ends is the gnome-terminal/konsole convention,
+        # and plain PageUp/Down scroll too because "Page Up shows earlier output"
+        # is what a user reaches for. (TUI mode returned above; there the running
+        # program gets these as VT input.)
+        if self._scroll_key(key, bool(shift)):
+            return
+
         text = event.text()
         # Typed input is deliberate -- you pressed the key -- so printable
         # non-ASCII (the euro sign, accents, CJK) is sent UTF-8 encoded. The
@@ -751,6 +760,25 @@ class SecureTerminal(QPlainTextEdit):
         if text and all(ch.isprintable() for ch in text):
             self._write(text.encode('utf-8'))
         # non-printable input and arrow/navigation keys are intentionally ignored
+
+    def _scroll_key(self, key, shift):
+        """Scroll the scrollback view for a navigation key in line mode. Returns
+        True when `key` was a scroll key and was handled. PageUp/PageDown scroll
+        a page unmodified (line mode has no program consuming them); Shift+Home/
+        End jump to the ends, matching the standard terminal bindings and leaving
+        plain Home/End free for line editing later."""
+        bar = self.verticalScrollBar()
+        if key == Qt.Key.Key_PageUp:
+            bar.triggerAction(bar.SliderAction.SliderPageStepSub)
+        elif key == Qt.Key.Key_PageDown:
+            bar.triggerAction(bar.SliderAction.SliderPageStepAdd)
+        elif shift and key == Qt.Key.Key_Home:
+            bar.triggerAction(bar.SliderAction.SliderToMinimum)
+        elif shift and key == Qt.Key.Key_End:
+            bar.triggerAction(bar.SliderAction.SliderToMaximum)
+        else:
+            return False
+        return True
 
     def _tui_key(self, event):
         """Encode a keystroke as VT input for the program in TUI mode."""
