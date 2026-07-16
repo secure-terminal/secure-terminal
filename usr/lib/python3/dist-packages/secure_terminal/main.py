@@ -1474,6 +1474,11 @@ class MainWindow(QMainWindow):
             btn.setCheckable(True)
             btn.setToolTip(tip)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            # A safety-coloured dot (the old toolbar symbol) on the risk-bearing
+            # chips: yellow Strip, green Reveal, red Show, yellow TUI. It shows the
+            # risk colour at a glance even when the chip is not the selected one.
+            if colour:
+                btn.setIcon(_dot_icon(colour))
             checked = colour or '#3b7ddd'
             css += ('QFrame#chip QPushButton#chip_%s:checked'
                     '{background:%s;color:#fff;font-weight:600}' % (key, checked))
