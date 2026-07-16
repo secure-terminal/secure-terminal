@@ -86,10 +86,10 @@ from PyQt6.QtWidgets import QPlainTextEdit, QToolTip
 # of the package (main.py, dialog.py).
 from secure_terminal.sanitize import (
     THEMES, BASE_POINT_SIZE, ANSI_PALETTE, DISPLAY_MODES,
-    ANSI_RE as _ANSI, SGR_RE as _SGR,
-    colors_allowed, too_close, render_output, sanitize_paste,
+    colors_allowed, too_close, sanitize_paste,
     sanitize_paste_unicode,
-    paste_findings, parse_sgr, tui_cell, sanitize_title, apply_line_edits,
+    paste_findings, tui_cell, sanitize_title,
+    feed_line_edits, cells_to_runs, cells_display_col,
     wants_full_screen, leaves_full_screen, describe_codepoint,
     _ALT_SCREEN as _ALT_ENTER, _ALT_SCREEN_OFF as _ALT_LEAVE,
 )
@@ -229,8 +229,14 @@ class SecureTerminal(QPlainTextEdit):
         # escapes). OSC 52 clipboard and OSC 8 hyperlinks stay blocked regardless.
         self._allow_title = False
         self._last_title = ''
-        # persistent output cursor for line mode (see _append_runs)
+        # persistent output cursor for line mode (see _paint_line)
         self._out_cursor = None
+        # the current (editable) line held as LOGICAL cells (source_char, sgr_key)
+        # plus a logical cursor column, so the shell's cursor/erase ops act on
+        # characters, not on a reveal badge's multi-column rendering.
+        self._line_cells = []
+        self._line_col = 0
+        self._line_fmt_cache = {}     # sgr_key -> QTextCharFormat (line mode)
         # show the "this program wants TUI mode" advisory at most once per
         # full-screen program, so one that redraws every second does not spam it.
         self._tui_hint_shown = False
@@ -268,6 +274,7 @@ class SecureTerminal(QPlainTextEdit):
         pal.setColor(QPalette.ColorRole.Text, QColor(text))
         self.setPalette(pal)
         self._fmt_cache = {}          # theme changes the resolved cell colours
+        self._line_fmt_cache = {}     # and the line-mode SGR format cache
         if self.tui_active():
             self._render_timer.start(16)
 
@@ -306,11 +313,13 @@ class SecureTerminal(QPlainTextEdit):
             return
         self.clear()
         self._out_cursor = None
+        self._line_cells = []
+        self._line_col = 0
         self._sgr_reset()                 # replay SGR colours from a clean slate
         if self._raw:
             # Only the recent tail, so a mode toggle after a flood cannot freeze
             # the UI re-rendering (and reveal-expanding) megabytes of scrollback.
-            self._append_runs(self._render_runs(self._raw[-self._RERENDER_TAIL:]))
+            self._feed_line(self._raw[-self._RERENDER_TAIL:])
 
     def current_mode(self):
         return self._mode
@@ -535,14 +544,11 @@ class SecureTerminal(QPlainTextEdit):
         # palette indexes (or None for default) + bold; folded by parse_sgr.
         self._sgr = {'fg': None, 'bg': None, 'bold': False}
 
-    def _apply_sgr(self, param_str):
-        parse_sgr(param_str, self._sgr)
-
-    def _current_format(self):
-        """Build the QTextCharFormat for the current SGR state, guarding against
-        an unreadable foreground/background combination."""
+    def _format_for(self, state):
+        """Build the QTextCharFormat for an SGR state dict, guarding against an
+        unreadable foreground/background combination."""
         fmt = QTextCharFormat()
-        fg_i, bg_i, bold = self._sgr['fg'], self._sgr['bg'], self._sgr['bold']
+        fg_i, bg_i, bold = state['fg'], state['bg'], state['bold']
         if fg_i is None and bg_i is None and not bold:
             return fmt
         base_bg, base_fg = THEMES.get(self._theme, THEMES['dark'])
@@ -560,27 +566,16 @@ class SecureTerminal(QPlainTextEdit):
             fmt.setFontWeight(QFont.Weight.Bold)
         return fmt
 
-    def _render_runs(self, text):
-        """Turn decoded output into a list of (display_text, format) runs. With
-        colours off there is a single default-format run; with colours on the
-        text is split at each SGR sequence and each run carries its colour."""
-        if not self._effective_colors():
-            return [(render_output(text, self._mode), None)]
-        runs = []
-        pos = 0
-        for m in _ANSI.finditer(text):
-            seg = text[pos:m.start()]
-            if seg:
-                runs.append((render_output(seg, self._mode),
-                             self._current_format()))
-            sgr = _SGR.fullmatch(m.group())
-            if sgr:
-                self._apply_sgr(sgr.group(1))
-            pos = m.end()
-        seg = text[pos:]
-        if seg:
-            runs.append((render_output(seg, self._mode), self._current_format()))
-        return runs
+    def _fmt_from_key(self, key):
+        """QTextCharFormat for a cell's SGR key (a sorted-items tuple), or the
+        default format for None. Cached; the theme change clears the cache."""
+        if key is None:
+            return QTextCharFormat()
+        fmt = self._line_fmt_cache.get(key)
+        if fmt is None:
+            fmt = self._format_for(dict(key))
+            self._line_fmt_cache[key] = fmt
+        return fmt
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -672,7 +667,7 @@ class SecureTerminal(QPlainTextEdit):
         self._raw += text
         if len(self._raw) > self._RAW_MAX:
             self._raw = self._raw[-self._RAW_MAX:]     # drop the oldest output
-        self._append_runs(self._render_runs(text))
+        self._feed_line(text)
         # A full-screen program (htop, vim) is unusable in line mode -- its
         # escapes are stripped, leaving garbage. Point the user at TUI mode once.
         if not self._tui_hint_shown and entered:
@@ -735,114 +730,49 @@ class SecureTerminal(QPlainTextEdit):
             self._pid = None
 
     def _append(self, text):
-        self._append_runs([(text, None)])
+        self._feed_line(text)
 
     def _advise(self, message):
-        """Append a one-line advisory from the terminal itself (not the running
-        program), styled distinctly (yellow, italic) and clearly marked so it
-        cannot be mistaken for program output."""
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor('#e5a50a'))
-        fmt.setFontItalic(True)
-        self._append_runs([('\n[secure-terminal] ' + message + '\n', fmt)])
+        """Show a one-line advisory from the terminal itself (not the running
+        program), clearly marked so it cannot be mistaken for program output and
+        rendered in yellow when colours are on."""
+        saved = self._sgr
+        self._sgr = {'fg': 3, 'bg': None, 'bold': True}      # yellow, bold
+        self._feed_line('\n[secure-terminal] ' + message + '\n')
+        self._sgr = saved
 
-    def _append_plain(self, text):
-        """Bulk line-mode append for uncolored output: resolve the line-editing
-        controls in Python (apply_line_edits) and write the result in a couple of
-        insertText calls, instead of walking a QTextCursor per character. This is
-        the path a flood takes, so it stays O(n) where the per-char path crawled;
-        _MAX_LINE hard-wraps a runaway line so a newline-free flood cannot build
-        one unbounded block."""
-        text = text.replace('\r\n', '\n')
+    def _feed_line(self, text):
+        """The single line-mode output path: advance the logical cell buffer by
+        this raw chunk (feed_line_edits honors \\r, \\b and the line-local CSI
+        cursor/erase ops, strips every other escape) and repaint the current line.
+        Replaces the old strip-then-QTextCursor path; the cell model is what lets
+        a reveal badge edit as one character."""
+        completed, self._line_cells, self._line_col, self._sgr = feed_line_edits(
+            self._line_cells, self._line_col, self._sgr, text, self._MAX_LINE)
+        self._paint_line(completed)
+
+    def _paint_line(self, completed):
+        """Render the just-finished lines (immutable scrollback) plus the current
+        editable line to the document, and place the caret at the display column
+        of the logical cursor (a reveal badge is several columns wide)."""
+        colors = self._effective_colors()
+        runs, prefix = cells_to_runs(completed, self._line_cells,
+                                     self._mode, colors)
         cursor = self._out_cursor
         if cursor is None:
             cursor = self.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
-        blk = cursor.block()
-        col = cursor.position() - blk.position()
-        completed, line, col = apply_line_edits(blk.text(), col, text, self._MAX_LINE)
+        blk_start = cursor.block().position()
         edit = QTextCursor(cursor)
-        edit.setPosition(blk.position())
-        edit.movePosition(QTextCursor.MoveOperation.EndOfBlock,
+        edit.setPosition(blk_start)
+        edit.movePosition(QTextCursor.MoveOperation.End,
                           QTextCursor.MoveMode.KeepAnchor)
-        edit.removeSelectedText()            # clear the current (incomplete) line
-        edit.insertText('\n'.join(completed + [line]))
-        final_start = edit.position() - len(line)   # start of the new current line
-        cursor.setPosition(final_start + col)
-        self._out_cursor = cursor
-        self.setTextCursor(cursor)
-        self.ensureCursorVisible()
-
-    def _append_runs(self, runs):
-        runs = [(text, fmt) for text, fmt in runs if text]
-        if not runs:
-            return
-        # Fast, bulk path for uncolored output -- the common case, and the one a
-        # flood arrives on (colours are opt-in). Resolve the line edits in Python
-        # and bulk-insert; only genuinely coloured runs fall through to the
-        # per-character overwrite path below.
-        if all(fmt is None for _, fmt in runs):
-            self._append_plain(''.join(text for text, _ in runs))
-            return
-        # The output cursor persists across writes, like a real terminal cursor.
-        # A program may leave it mid-line -- zsh, for one, redraws its prompt with
-        # a carriage return and leaves trailing fill spaces beyond the cursor --
-        # and the next write (the echo of what you type) must land there, not at
-        # the end of the document. Resetting to End each time is what put a wall
-        # of spaces before your input.
-        cursor = self._out_cursor
-        if cursor is None:
-            cursor = self.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-        move = QTextCursor.MoveOperation
-        keep = QTextCursor.MoveMode.KeepAnchor
-        sep = 0x2029
-        default_fmt = QTextCharFormat()
-        for text, fmt in runs:
-            if not text:
-                continue
-            if fmt is None:
-                fmt = default_fmt
-            # CRLF is just a line ending: the pty maps every "\n" to "\r\n" on
-            # output, so a carriage return glued to a newline carries no cursor
-            # meaning and must NOT redraw the line -- collapse it first.
-            text = text.replace('\r\n', '\n')
-            # Fast path: plain output appended at the end of the document. When
-            # the cursor is mid-line, fall through to overwrite semantics.
-            if cursor.atEnd() and '\x08' not in text and '\r' not in text:
-                cursor.insertText(text, fmt)
-                continue
-            # Slow path: honor the two line-local cursor controls the shell's
-            # line editor emits, with terminal overwrite semantics. Backspace
-            # (0x08) moves the cursor one cell left; a bare carriage return
-            # (0x0D) moves it to column 0; a printable character OVERWRITES the
-            # cell under the cursor (a real terminal never inserts-and-shifts)
-            # and only appends at the end of the line. All of it is bounded to
-            # the current line -- a program can never reach an earlier line or
-            # the scrollback -- and there is still no vertical or absolute cursor
-            # movement, because those arrive as escapes, which are stripped.
-            # U+2029 is Qt's block (newline) separator.
-            for ch in text:
-                if ch == '\n':
-                    cursor.movePosition(move.EndOfBlock)
-                    cursor.insertText('\n', fmt)
-                elif ch == '\r':
-                    cursor.movePosition(move.StartOfBlock)
-                elif ch == '\x08':
-                    probe = QTextCursor(cursor)
-                    probe.movePosition(move.Left, keep)
-                    sel = probe.selectedText()
-                    if sel and ord(sel[0]) != sep:
-                        cursor.movePosition(move.Left)
-                else:
-                    probe = QTextCursor(cursor)
-                    probe.movePosition(move.Right, keep)
-                    sel = probe.selectedText()
-                    if sel and ord(sel[0]) != sep:
-                        cursor.movePosition(move.Right, keep)
-                        cursor.insertText(ch, fmt)   # overwrite the cell
-                    else:
-                        cursor.insertText(ch, fmt)   # end of line -> append
+        edit.removeSelectedText()            # drop the old current line
+        for text, key in runs:
+            edit.insertText(text, self._fmt_from_key(key))
+        disp = cells_display_col(self._line_cells, self._line_col, self._mode)
+        target = blk_start + prefix + disp
+        cursor.setPosition(min(target, self.document().characterCount() - 1))
         self._out_cursor = cursor
         self.setTextCursor(cursor)
         self.ensureCursorVisible()

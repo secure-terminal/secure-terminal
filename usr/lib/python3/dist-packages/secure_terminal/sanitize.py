@@ -205,6 +205,126 @@ def apply_line_edits(line, col, text, max_line=0):
     return completed, ''.join(buf), col
 
 
+# Line-LOCAL cursor/erase escapes the shell's line editor emits, honored in line
+# mode so the display tracks the real command buffer (readline/zle redraw with
+# these under a capable TERM). ONLY these, and only within the current line:
+#   CSI n C  cursor forward      CSI n D  cursor back
+#   CSI n G  cursor to column n   CSI n K  erase in line (0 EOL, 1 BOL, 2 all)
+# Vertical/absolute movement (A/B/H/d/...) is NOT honored -- those are stripped,
+# so a program can never reach another line or the scrollback. The worst these
+# allow is redrawing the CURRENT line, exactly like the \r/\b already honored.
+_LINE_CSI_RE = re.compile(r'\x1b\[([0-9]*)([CDGK])')
+_SGR_ONLY_RE = re.compile(r'\x1b\[([0-9;]*)m')
+
+
+def feed_line_edits(cells, col, sgr, raw, max_line=0):
+    """Advance the current line's LOGICAL cell buffer by one raw output chunk.
+
+    A cell is (source_char, sgr_state) -- one SOURCE character, whatever its later
+    display width (a reveal <U+XXXX> badge is one cell but eight columns), so the
+    shell's cursor/erase ops act on characters, not on the rendering. This is what
+    makes backspacing over a badge delete the whole badge. Pure and testable.
+
+    Honors \r, \b, \n and the line-local CSI ops (see _LINE_CSI_RE); folds SGR into
+    `sgr` (so colour survives a redraw); strips every other escape and treats a
+    stray control byte as an overwrite cell (rendered '_' later). Returns
+    (completed, cells, col, sgr): cell-lists finished by a newline, plus the new
+    current buffer, cursor column and SGR state. max_line (>0) hard-wraps."""
+    completed = []
+    cells = list(cells)
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch == '\x1b':
+            m = _LINE_CSI_RE.match(raw, i)
+            if m:
+                num = int(m.group(1)) if m.group(1) else None
+                op = m.group(2)
+                if op == 'C':
+                    col = min(len(cells), col + (num or 1))
+                elif op == 'D':
+                    col = max(0, col - (num or 1))
+                elif op == 'G':
+                    col = max(0, min(len(cells), (num or 1) - 1))
+                else:                                   # K: erase in line
+                    if num in (None, 0):
+                        del cells[col:]                 # cursor -> end of line
+                    elif num == 1:
+                        for j in range(0, min(col + 1, len(cells))):
+                            cells[j] = (' ', cells[j][1])
+                    elif num == 2:
+                        cells = []
+                        col = 0
+                i = m.end()
+                continue
+            m = _SGR_ONLY_RE.match(raw, i)
+            if m:
+                sgr = dict(sgr)
+                parse_sgr(m.group(1), sgr)
+                i = m.end()
+                continue
+            m = ANSI_RE.match(raw, i)
+            if m:                                       # any other escape: strip
+                i = m.end()
+                continue
+            i += 1                                      # lone/unknown ESC: drop
+            continue
+        if ch == '\n':
+            completed.append(cells)
+            cells, col = [], 0
+        elif ch == '\r':
+            col = 0
+        elif ch == '\x08':
+            if col > 0:
+                col -= 1
+        else:
+            state = tuple(sorted(sgr.items()))
+            if col < len(cells):
+                cells[col] = (ch, state)
+            else:
+                cells.append((ch, state))
+            col += 1
+            if max_line and len(cells) >= max_line:
+                completed.append(cells)
+                cells, col = [], 0
+        i += 1
+    return completed, cells, col, sgr
+
+
+def cells_to_runs(lines, current, mode, colors):
+    r"""Render finished cell-lines plus the current cell-line to a coalesced list
+    of (display_text, sgr_key) runs, with '\n' between the finished lines and
+    before the current one. Each cell's char is rendered via render_output (so the
+    escape-stripping / mode rules still hold); adjacent cells of the same SGR key
+    (or all of them when colours are off) are merged into one run, so an uncolored
+    flood is one insert, not one per character. Returns (runs, prefix_len) where
+    prefix_len is the display-character offset at which the current line begins,
+    for placing the caret."""
+    runs = []                             # list of [ [text_parts], sgr_key ]
+
+    def add(disp, key):
+        if runs and runs[-1][1] == key:
+            runs[-1][0].append(disp)
+        else:
+            runs.append([[disp], key])
+
+    for cellline in lines:
+        for ch, key in cellline:
+            add(render_output(ch, mode), key if colors else None)
+        add('\n', None)
+    prefix_len = sum(len(p) for parts, _ in runs for p in parts)
+    for ch, key in current:
+        add(render_output(ch, mode), key if colors else None)
+    return [(''.join(parts), key) for parts, key in runs], prefix_len
+
+
+def cells_display_col(cells, col, mode):
+    """The DISPLAY column (character offset) of logical cursor position `col`,
+    i.e. the width of rendering cells[0:col] under `mode` -- needed to place the
+    caret, since a reveal badge is many columns wide."""
+    return sum(len(render_output(c, mode)) for c, _ in cells[:col])
+
+
 def sanitize_paste(text):
     """Strip a pasted string to printable ASCII; newlines become carriage
     returns (what the shell expects for a submitted line)."""
