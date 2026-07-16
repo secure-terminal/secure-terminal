@@ -243,9 +243,12 @@ def feed_line_edits(cells, col, sgr, raw, max_line=0):
     Honors \r, \b, \n and the line-local CSI ops (see _LINE_CSI_RE); folds SGR into
     `sgr` (so colour survives a redraw); strips every other escape and treats a
     stray control byte as an overwrite cell (rendered '_' later). Returns
-    (completed, cells, col, sgr): cell-lists finished by a newline, plus the new
-    current buffer, cursor column and SGR state. max_line (>0) hard-wraps."""
+    (completed, cells, col, sgr, wraps): cell-lists finished by a newline or an
+    autowrap, plus the new current buffer, cursor column, SGR state, and a bool
+    per completed line -- True where the line ended by a soft autowrap (so the
+    widget can join the wrapped rows on copy). max_line (>0) autowraps."""
     completed = []
+    wraps = []                            # parallel to completed: True == autowrap
     cells = list(cells)
     i, n = 0, len(raw)
     while i < n:
@@ -286,6 +289,7 @@ def feed_line_edits(cells, col, sgr, raw, max_line=0):
             continue
         if ch == '\n':
             completed.append(cells)
+            wraps.append(False)                     # a real line break, not a wrap
             cells, col = [], 0
         elif ch == '\r':
             col = 0
@@ -293,17 +297,23 @@ def feed_line_edits(cells, col, sgr, raw, max_line=0):
             if col > 0:
                 col -= 1
         else:
+            # DEFERRED autowrap (VT "last column" behaviour): filling the last
+            # column leaves the cursor there; the NEXT printable char wraps to a
+            # fresh row. A \r or backspace before it moves off the margin and
+            # cancels the pending wrap, so width-sized output + a \n or \r is not
+            # split with a spurious blank line.
+            if max_line and col >= max_line:
+                completed.append(cells)
+                wraps.append(True)                  # a soft autowrap continuation
+                cells, col = [], 0
             state = tuple(sorted(sgr.items()))
             if col < len(cells):
                 cells[col] = (ch, state)
             else:
                 cells.append((ch, state))
             col += 1
-            if max_line and len(cells) >= max_line:
-                completed.append(cells)
-                cells, col = [], 0
         i += 1
-    return completed, cells, col, sgr
+    return completed, cells, col, sgr, wraps
 
 
 # Risk class of a neutralized/revealed character, so its marking (the '_' or the
@@ -339,7 +349,7 @@ WRAP_NL = '\x00wrap'
 _RUN_CAP = 2000
 
 
-def cells_to_runs(lines, current, mode, colors, markings=True, wrap=0):
+def cells_to_runs(lines, current, mode, colors, markings=True, wraps=None):
     r"""Render finished cell-lines plus the current cell-line to a coalesced list
     of (display_text, sgr_key) runs, with '\n' between the finished lines and
     before the current one. Each cell's char is rendered via render_output (so the
@@ -367,10 +377,13 @@ def cells_to_runs(lines, current, mode, colors, markings=True, wrap=0):
         else:
             add(disp, key if colors else None)
 
-    for cellline in lines:
+    for idx, cellline in enumerate(lines):
         for ch, key in cellline:
             emit(ch, key)
-        add('\n', None)
+        # a newline that ended a soft autowrap is tagged so the widget can join
+        # the wrapped rows on copy (see WRAP_NL); a real line break stays None.
+        soft = wraps is not None and idx < len(wraps) and wraps[idx]
+        add('\n', WRAP_NL if soft else None)
     prefix_len = sum(len(p) for parts, _ in runs for p in parts)
     for ch, key in current:
         emit(ch, key)

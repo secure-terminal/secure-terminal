@@ -78,7 +78,8 @@ try:
 except ImportError:                      # TUI mode is unavailable without pyte
     pyte = None
 
-from PyQt6.QtCore import QSocketNotifier, Qt, QTimer, pyqtSignal, QEvent
+from PyQt6.QtCore import (QSocketNotifier, Qt, QTimer, pyqtSignal, QEvent,
+                          QMimeData)
 from PyQt6.QtGui import QFont, QTextCursor, QColor, QPalette, QTextCharFormat
 from PyQt6.QtWidgets import QPlainTextEdit, QToolTip
 
@@ -90,7 +91,7 @@ from secure_terminal.sanitize import (
     colors_allowed, too_close, sanitize_paste,
     sanitize_paste_unicode,
     paste_findings, tui_cell, sanitize_title,
-    feed_line_edits, cells_to_runs, cells_display_col, MARK_KEY,
+    feed_line_edits, cells_to_runs, cells_display_col, MARK_KEY, WRAP_NL,
     wants_full_screen, leaves_full_screen, describe_codepoint,
     _ALT_SCREEN as _ALT_ENTER, _ALT_SCREEN_OFF as _ALT_LEAVE,
 )
@@ -861,17 +862,18 @@ class SecureTerminal(QPlainTextEdit):
         # Hard-wrap at the reported terminal width (never below a sane floor, and
         # capped so a pathological newline-free flood still bounds each block).
         wrap = self._cols if 8 <= self._cols <= self._MAX_LINE else self._MAX_LINE
-        completed, self._line_cells, self._line_col, self._sgr = feed_line_edits(
-            self._line_cells, self._line_col, self._sgr, text, wrap)
-        self._paint_line(completed)
+        completed, self._line_cells, self._line_col, self._sgr, wraps = \
+            feed_line_edits(self._line_cells, self._line_col, self._sgr, text,
+                            wrap)
+        self._paint_line(completed, wraps)
 
-    def _paint_line(self, completed):
+    def _paint_line(self, completed, wraps=None):
         """Render the just-finished lines (immutable scrollback) plus the current
         editable line to the document, and place the caret at the display column
         of the logical cursor (a reveal badge is several columns wide)."""
         colors = self._effective_colors()
         runs, prefix = cells_to_runs(completed, self._line_cells,
-                                     self._mode, colors, self._markings)
+                                     self._mode, colors, self._markings, wraps)
         cursor = self._out_cursor
         if cursor is None:
             cursor = self.textCursor()
@@ -883,13 +885,42 @@ class SecureTerminal(QPlainTextEdit):
                           QTextCursor.MoveMode.KeepAnchor)
         edit.removeSelectedText()            # drop the old current line
         for text, key in runs:
-            edit.insertText(text, self._fmt_from_key(key))
+            if key == WRAP_NL:
+                # a soft-autowrap break: a real newline for display, but the new
+                # block is marked a continuation so copy joins the wrapped rows.
+                edit.insertText('\n')
+                edit.block().setUserState(1)
+            else:
+                edit.insertText(text, self._fmt_from_key(key))
         disp = cells_display_col(self._line_cells, self._line_col, self._mode)
         target = blk_start + prefix + disp
         cursor.setPosition(min(target, self.document().characterCount() - 1))
         self._out_cursor = cursor
         self.setTextCursor(cursor)
         self.ensureCursorVisible()
+
+    def createMimeDataFromSelection(self):
+        """On copy, join soft-autowrapped rows (blocks _paint_line marked with
+        userState 1) so a line that wrapped at the terminal width copies as one
+        line, like a real terminal -- not with a spurious newline at each wrap."""
+        cursor = self.textCursor()
+        if not cursor.hasSelection():
+            return super().createMimeDataFromSelection()
+        doc = self.document()
+        start, end = cursor.selectionStart(), cursor.selectionEnd()
+        parts = []
+        block = doc.findBlock(start)
+        while block.isValid() and block.position() <= end:
+            base = block.position()
+            seg_start = max(start, base) - base
+            seg_end = min(end, base + len(block.text())) - base
+            if parts and block.userState() != 1:      # 1 == wrap continuation
+                parts.append('\n')
+            parts.append(block.text()[seg_start:seg_end])
+            block = block.next()
+        data = QMimeData()
+        data.setText(''.join(parts))
+        return data
 
     def _write(self, data):
         if self._fd is None:
