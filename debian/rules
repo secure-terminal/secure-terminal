@@ -10,3 +10,9 @@
 ## declared explicitly in debian/control.
 %:
 	dh $@
+
+## Register the AppArmor profile and reload it on install/upgrade (and handle
+## removal), via debhelper's dh_apparmor.
+override_dh_installdeb:
+	dh_installdeb
+	dh_apparmor --profile-name=secure-terminal

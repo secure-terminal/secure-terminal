@@ -1,0 +1,67 @@
+# AppArmor profile for secure-terminal.
+#
+# Defence-in-depth for the terminal PROCESS itself (a PyQt6 GUI that parses
+# untrusted program output): it confines what the GUI can read and write, while
+# the shells and programs it launches -- the user's own commands -- run
+# unconfined, because confining them would defeat a terminal's whole purpose.
+#
+# AI-Assisted. Validate with aa-logprof on the target before enforcing; ship in
+# complain mode first if unsure (aa-complain secure-terminal).
+
+abi <abi/4.0>,
+
+include <tunables/global>
+
+profile secure-terminal /usr/bin/secure-terminal {
+  include <abstractions/base>
+  include <abstractions/consoles>
+  include <abstractions/python>
+  include <abstractions/qt6>
+  include <abstractions/qt6-compose-cache-write>
+  include <abstractions/qt6-settings-write>
+  include <abstractions/X>
+  include <abstractions/wayland>
+  include <abstractions/mesa>
+  include <abstractions/fonts>
+  include <abstractions/freedesktop.org>
+  include <abstractions/dbus-session-strict>
+  include <abstractions/nameservice-strict>
+
+  # the application code (the python3 interpreter is this profile's own exec, so
+  # it needs no rule; the shell children below are what transition)
+  /usr/bin/ r,
+  /usr/bin/secure-terminal r,
+  /usr/lib/python3/dist-packages/secure_terminal/{,**} r,
+  /usr/share/secure-terminal/{,**} r,
+  /usr/share/applications/secure-terminal.desktop r,
+  /usr/share/icons/{,**} r,
+
+  # settings drop-ins (system + user) and per-tab session state
+  /etc/secure-terminal.d/{,**} r,
+  /usr/local/etc/secure-terminal.d/{,**} r,
+  owner @{HOME}/.config/secure-terminal.d/ rw,
+  owner @{HOME}/.config/secure-terminal.d/{,**} rwkl,
+  owner @{HOME}/.local/state/secure-terminal/ rw,
+  owner @{HOME}/.local/state/secure-terminal/{,**} rwkl,
+
+  # the login shell and $SHELL lookup
+  /etc/shells r,
+  /etc/passwd r,
+  /etc/zsh/{,**} r,
+
+  # pseudo-terminals for the child shells
+  /dev/ptmx rw,
+  /dev/pts/ r,
+  owner /dev/pts/[0-9]* rw,
+
+  # secure-terminal is a terminal: it launches the user's login shell and, via
+  # "New Tab Running...", other programs. Those are the user's own commands and
+  # run UNCONFINED -- confining them here would break the terminal's purpose.
+  /{,usr/}bin/*     Ux,
+  /{,usr/}sbin/*    Ux,
+  /usr/local/bin/*  Ux,
+  /usr/local/sbin/* Ux,
+
+  # site additions (e.g. an extra shell path) go here without editing this file
+  include if exists <local/secure-terminal>
+}
