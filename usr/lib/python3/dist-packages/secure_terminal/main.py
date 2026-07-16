@@ -76,6 +76,9 @@ def _read_version(paths=None):
 # Shown in the About dialog.
 APP_VERSION = _read_version()
 
+# cap on a `ctl dump-tab` reply so it stays under the IPC frame limit.
+_DUMP_MAX = 512 * 1024
+
 # menu label -> scrollback limit in lines (0 = unlimited)
 SCROLLBACK_CHOICES = [
     ('1,000 lines', 1000),
@@ -430,7 +433,7 @@ class MainWindow(QMainWindow):
                              'mode': term.current_mode(),
                              'tui': term.tui_active()})
             return {'ok': True, 'tabs': tabs}
-        if op in ('ctl-send-text', 'ctl-set-tab-title'):
+        if op in ('ctl-send-text', 'ctl-set-tab-title', 'ctl-dump-tab'):
             term = self._find_tab(request.get('tab'))
             if term is None:
                 return {'ok': False, 'error': 'no tab matched %r'
@@ -443,6 +446,16 @@ class MainWindow(QMainWindow):
                 # smuggle an escape/control than a paste can.
                 term._write(sanitize_paste(text).encode('utf-8'))
                 return {'ok': True}
+            if op == 'ctl-dump-tab':
+                # read back the tab's CURRENT rendered text (already sanitized --
+                # it is exactly what is on screen), for drive-and-assert E2E tests.
+                text = term.toPlainText()
+                lines = request.get('lines')
+                if isinstance(lines, int) and lines > 0:
+                    text = '\n'.join(text.split('\n')[-lines:])
+                if len(text) > _DUMP_MAX:
+                    text = text[-_DUMP_MAX:]     # tail-cap to stay under the frame
+                return {'ok': True, 'text': text}
             title = request.get('title')
             if not isinstance(title, str):
                 return {'ok': False, 'error': 'title must be a string'}
@@ -1689,15 +1702,22 @@ def _ctl_main(argv):
     title = sub.add_parser('set-tab-title', help='rename a tab')
     title.add_argument('--tab', required=True, metavar='MATCH')
     title.add_argument('title')
+    dump = sub.add_parser('dump-tab',
+                          help="print a tab's current rendered text (for tests)")
+    dump.add_argument('--tab', required=True, metavar='MATCH')
+    dump.add_argument('--lines', type=int, metavar='N',
+                      help='only the last N lines')
     args = parser.parse_args(argv)
 
     request = {'op': 'ctl-' + args.cmd}
-    if args.cmd in ('send-text', 'set-tab-title'):
+    if args.cmd in ('send-text', 'set-tab-title', 'dump-tab'):
         request['tab'] = args.tab
     if args.cmd == 'send-text':
         request['text'] = args.text
     if args.cmd == 'set-tab-title':
         request['title'] = args.title
+    if args.cmd == 'dump-tab' and args.lines:
+        request['lines'] = args.lines
 
     reply = ipc.send_request(args.instance_group, request)
     if reply is None:
@@ -1713,6 +1733,8 @@ def _ctl_main(argv):
             sys.stdout.write('%s\t%s%s\n' % (
                 tab.get('id'), tab.get('title', ''),
                 '  [tui]' if tab.get('tui') else ''))
+    elif args.cmd == 'dump-tab':
+        sys.stdout.write(reply.get('text', ''))
     return 0
 
 
