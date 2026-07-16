@@ -10,6 +10,7 @@ import signal
 import sys
 import shlex
 import argparse
+import json
 
 from PyQt6.QtCore import QTimer, Qt, QUrl, QRect, qInstallMessageHandler
 from PyQt6.QtGui import (
@@ -24,7 +25,8 @@ from PyQt6.QtWidgets import (
     QComboBox, QCheckBox, QFormLayout, QMessageBox,
 )
 
-from secure_terminal import settings, session
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+from secure_terminal import settings, session, ipc
 from secure_terminal.terminal import (
     SecureTerminal, THEMES, DISPLAY_MODES, tui_available,
 )
@@ -323,6 +325,77 @@ class MainWindow(QMainWindow):
         if spec.get('title'):
             self._user_titles[term] = spec['title']
             self._refresh_tab_label(term)
+
+    # -- single-instance IPC server (owner-only socket) -----------------------
+    def start_instance_server(self, group='default'):
+        """Listen on the group's owner-only socket so later launches reuse this
+        process. A stale socket from a crashed instance is cleared first."""
+        self._instance_group = group
+        try:
+            ipc.ensure_socket_dir()
+        except OSError:
+            return                          # no runtime dir -> no single instance
+        path = ipc.socket_path(group)
+        QLocalServer.removeServer(path)     # clear a stale socket, if any
+        self._server = QLocalServer(self)
+        self._server.setSocketOptions(
+            QLocalServer.SocketOption.UserAccessOption)   # 0700, same-UID only
+        if not self._server.listen(path):
+            self._server = None
+            return
+        self._server.newConnection.connect(self._on_instance_connection)
+
+    def _on_instance_connection(self):
+        conn = self._server.nextPendingConnection()
+        if conn is None:
+            return
+        framer = ipc.Framer()
+
+        def on_ready():
+            try:
+                payload = framer.feed(bytes(conn.readAll()))
+            except ValueError:
+                conn.abort()
+                return
+            if payload is None:
+                return                      # frame not complete yet
+            reply = self._dispatch_request(payload)
+            conn.write(ipc.frame(json.dumps(reply).encode('utf-8')))
+            conn.flush()
+            conn.disconnectFromServer()
+
+        conn.readyRead.connect(on_ready)
+
+    def _dispatch_request(self, payload):
+        """Handle one IPC request; return a reply dict. Every request is same-UID
+        (owner-only socket) but is still type-validated. Only 'open'/'ping' are
+        handled here; remote-control ops are added (and gated) separately."""
+        try:
+            request = json.loads(payload.decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
+            return {'ok': False, 'error': 'malformed request'}
+        if not isinstance(request, dict):
+            return {'ok': False, 'error': 'malformed request'}
+        op = request.get('op')
+        if op == 'ping':
+            return {'ok': True, 'pid': os.getpid()}
+        if op == 'open':
+            return self._ipc_open(request)
+        return {'ok': False, 'error': 'unknown op: %r' % (op,)}
+
+    def _ipc_open(self, request):
+        tabs = request.get('tabs')
+        opened = 0
+        for spec in (tabs if isinstance(tabs, list) else []):
+            if isinstance(spec, dict):
+                self._open_launch_tab(_sanitize_tab_spec(spec))
+                opened += 1
+        if opened == 0 and self.tabs.count() == 0:
+            self.new_tab()                  # a bare reuse: ensure a usable tab
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        return {'ok': True, 'opened': opened}
 
     def _restore_tab(self, info):
         """Recreate a tab from saved session state: its settings, name, colour
@@ -1421,6 +1494,8 @@ class _Launch:
         self.wm_class = None       # --class  -> WM_CLASS class / Wayland app-id
         self.wm_name = None        # --name   -> WM_CLASS instance (X11)
         self.session = None        # --session FILE
+        self.new_instance = False  # --new-instance -> never reuse a running one
+        self.instance_group = 'default'   # --instance-group NAME
         self.qt_args = []          # unrecognized args, handed to Qt
         self.tabs = []             # [{title, tui, mode, command}]
 
@@ -1442,6 +1517,11 @@ def _launch_parser(with_globals):
                        help='window WM_CLASS instance name (X11)')
         p.add_argument('--session', metavar='FILE',
                        help='open the tabs described in a session file')
+        p.add_argument('--new-instance', dest='new_instance', action='store_true',
+                       help='force a fresh process instead of reusing a running one')
+        p.add_argument('--instance-group', dest='instance_group',
+                       metavar='NAME', default='default',
+                       help='which running instance to reuse (default: "default")')
     p.add_argument('--title', help='initial tab title')
     p.add_argument('--tui', action='store_true', default=None,
                    help='start this tab in TUI mode')
@@ -1482,6 +1562,8 @@ def _parse_launch_args(argv):
             launch.wm_class = namespace.wm_class
             launch.wm_name = namespace.wm_name
             launch.session = namespace.session
+            launch.new_instance = namespace.new_instance
+            launch.instance_group = namespace.instance_group
         else:
             namespace = parser.parse_args(group)
         launch.tabs.append({
@@ -1505,9 +1587,40 @@ def _parse_launch_args(argv):
     return launch
 
 
+def _launch_to_request(launch):
+    """Serialize a launch spec into an IPC 'open' request for a running instance."""
+    return {'op': 'open', 'wm_class': launch.wm_class, 'tabs': launch.tabs}
+
+
+def _sanitize_tab_spec(spec):
+    """Type-validate a tab spec received over IPC (owner-only, but defensive)."""
+    title, tui = spec.get('title'), spec.get('tui')
+    mode, command = spec.get('mode'), spec.get('command')
+    return {
+        'title': title if isinstance(title, str) else None,
+        'tui': tui if isinstance(tui, bool) else None,
+        'mode': mode if mode in DISPLAY_MODES else None,
+        'command': command if isinstance(command, (str, list)) else None,
+    }
+
+
 def main():
     _quiet_font_warnings()
     launch = _parse_launch_args(sys.argv[1:])
+
+    # Single instance by default: try to hand this launch to a running instance in
+    # the same group; if one answers, it opens the tabs and we exit. --new-instance
+    # skips this and always starts a fresh process.
+    if not launch.new_instance:
+        reply = ipc.send_request(launch.instance_group, _launch_to_request(launch))
+        if reply is not None:
+            if not reply.get('ok'):
+                sys.stderr.write('secure-terminal: %s\n'
+                                 % reply.get('error', 'the running instance '
+                                             'refused the request'))
+                return 1
+            return 0
+
     qt_argv = [sys.argv[0]] + launch.qt_args
     if launch.wm_name:
         qt_argv += ['-name', launch.wm_name]     # Qt X11 resource/instance name
@@ -1529,6 +1642,10 @@ def main():
         pass            # if we cannot auto-reap, tabs simply reap on exit
 
     window = MainWindow(launch=launch)
+    # Become the single-instance server so later launches reuse this process
+    # (unless the user asked for a standalone --new-instance).
+    if not launch.new_instance:
+        window.start_instance_server(launch.instance_group)
     window.show()
 
     return app.exec()

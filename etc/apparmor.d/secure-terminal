@@ -44,6 +44,14 @@ profile secure-terminal /usr/bin/secure-terminal {
   owner @{HOME}/.local/state/secure-terminal/ rw,
   owner @{HOME}/.local/state/secure-terminal/{,**} rwkl,
 
+  # single-instance IPC: an owner-only (0700) Unix socket under the runtime dir,
+  # so a second launch reuses the running instance.
+  owner /run/user/[0-9]*/secure-terminal/ rw,
+  owner /run/user/[0-9]*/secure-terminal/*.sock rwkl,
+  unix (create, bind, listen, shutdown, getattr, setattr) type=stream,
+  unix (accept, connect, send, receive) type=stream
+        peer=(label=@{profile_name}),
+
   # the login shell and $SHELL lookup
   /etc/shells r,
   /etc/passwd r,
