@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QCheckBox, QFormLayout, QMessageBox,
 )
 
-from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+from PyQt6.QtNetwork import QLocalServer
 from secure_terminal import settings, session, ipc
 from secure_terminal.sanitize import sanitize_paste
 from secure_terminal.terminal import (

@@ -52,7 +52,7 @@ def _privileged_conf_value(key):
                     if name.strip() == key:
                         value = raw.strip()
         except OSError:
-            pass
+            pass                        # missing/unreadable gate file -> fail open
     return value
 
 
@@ -70,7 +70,7 @@ def read_file(name):
             with open(os.path.join(directory, name), encoding='utf-8') as handle:
                 content = handle.read()
         except OSError:
-            pass
+            pass                        # missing/unreadable tier file -> fail open
     return content
 
 

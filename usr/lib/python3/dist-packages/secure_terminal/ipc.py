@@ -45,7 +45,7 @@ def ensure_socket_dir():
     try:
         os.chmod(directory, 0o700)          # enforce owner-only even if pre-existing
     except OSError:
-        pass
+        pass                                # best-effort; a bad chmod must not crash
     return directory
 
 

@@ -39,7 +39,7 @@ def TestOneInput(data):
     fdp = atheris.FuzzedDataProvider(data)
     text = fdp.ConsumeUnicodeNoSurrogates(2 ** 18)
 
-    comp, cells, col, sgr = feed_line_edits([], 0, {}, text)
+    comp, cells, col, sgr, _wraps = feed_line_edits([], 0, {}, text)
     if not 0 <= col <= len(cells):
         raise RuntimeError(
             "feed_line_edits cursor {0} out of [0,{1}]: input={2!r}".format(
