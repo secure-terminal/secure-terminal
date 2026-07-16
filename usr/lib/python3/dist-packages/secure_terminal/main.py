@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QToolBar, QSpinBox, QLabel,
     QWidget, QSizePolicy, QFileDialog, QInputDialog, QColorDialog,
     QMenu, QDialog, QGridLayout, QPushButton, QLineEdit,
+    QVBoxLayout, QHBoxLayout, QPlainTextEdit,
 )
 
 from secure_terminal import settings, session
@@ -92,6 +93,20 @@ def _toggle_icon(theme_name, letter, color):
     return _letter_icon(letter, color)
 
 
+def _dot_icon(color):
+    """A filled circle in `color` -- the traffic-light lamp of the security
+    indicator (green safe / yellow TUI / red unicode-shown)."""
+    pixmap = QPixmap(14, 14)
+    pixmap.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QBrush(QColor(color)))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawEllipse(1, 1, 12, 12)
+    painter.end()
+    return QIcon(pixmap)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -148,6 +163,7 @@ class MainWindow(QMainWindow):
         self._tab_colors = {}        # term -> tab colour name (for persistence)
         self._build_menu()
         self._build_toolbar()
+        self._build_security_indicator()
 
         # restore the previous session (tabs + scrollback) if enabled
         restored = session.load() if self._persist_session else []
@@ -378,6 +394,7 @@ class MainWindow(QMainWindow):
         self.act_tui.setChecked(term.current_tui())
         self.act_title.setChecked(term.allow_title_enabled())
         self._update_tui_indicator()
+        self._update_security_indicator()
         self._update_terminate_enabled()
 
     # -- zoom: per current tab ------------------------------------------------
@@ -424,6 +441,7 @@ class MainWindow(QMainWindow):
         if term is not None:
             term.apply_mode(mode)
         self._sync_mode_toggles(mode)
+        self._update_security_indicator()
         self._default_mode = mode
         self._persist()
 
@@ -468,12 +486,93 @@ class MainWindow(QMainWindow):
         self._default_tui = bool(enabled)
         self.act_tui.setChecked(enabled)
         self._update_tui_indicator()
+        self._update_security_indicator()
         self._persist()
 
     def _update_tui_indicator(self):
         term = self.current()
         active = term is not None and term.tui_active()
         self.tui_dot_action.setVisible(active)
+
+    # -- security indicator: a traffic light for the current tab's exposure ----
+    def _build_security_indicator(self):
+        self.sec_button = QPushButton(self)
+        self.sec_button.setFlat(True)
+        self.sec_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sec_button.clicked.connect(self._show_security_details)
+        self.statusBar().addPermanentWidget(self.sec_button)
+        self._update_security_indicator()
+
+    def _security_level(self):
+        """The current tab's exposure as (colour, short, detail). Highest risk
+        wins: rendering unicode (show/reveal) is red even in TUI mode, because a
+        deceptive glyph on screen is riskier than a confined full-screen program;
+        TUI alone is yellow; the strict line+strip default is green."""
+        term = self.current()
+        mode = term.current_mode() if term is not None else 'strip'
+        tui = term.tui_active() if term is not None else False
+        if mode in ('show', 'reveal'):
+            return ('#d83933', 'Unicode shown',
+                    'RED -- unicode output is being rendered ('
+                    + mode + ' mode).\n\n'
+                    'Non-ASCII glyphs are drawn on screen, so a look-alike '
+                    '(homoglyph) character can make text read as something it is '
+                    'not. The invisible, bidi and control classes are still '
+                    'neutralized, and typing/pasting is still sanitized, but a '
+                    'rendered glyph can still deceive the eye. This is treated as '
+                    'the highest risk -- higher than TUI mode -- because the '
+                    'deception is in what you are reading.\n\n'
+                    'Switch Show and Reveal off to return to the safe default.')
+        if tui:
+            return ('#e5a50a', 'TUI mode',
+                    'YELLOW -- TUI mode is active.\n\n'
+                    'Escape sequences are interpreted through a confined screen '
+                    'model so full-screen programs (ssh, vim, htop, tmux) work. '
+                    'Every cell is still character-filtered and the model has no '
+                    'OS reach (it cannot touch the clipboard or, unless you allow '
+                    'it, the window title). A program can still draw a misleading '
+                    'interface within its own screen, so only run programs you '
+                    'trust.\n\n'
+                    'Turn TUI mode off to return to the safe line mode.')
+        return ('#1f8a54', 'Safe',
+                'GREEN -- the strict, safe default.\n\n'
+                'Line mode with no escape parser (TERM=dumb): program output is '
+                'reduced to printable ASCII, every escape sequence is removed, '
+                'and non-ASCII is shown as "_". Pasting is sanitized and warned '
+                'on. There is nothing on screen a program can use to deceive '
+                'you.')
+
+    def _update_security_indicator(self):
+        color, short, _detail = self._security_level()
+        self.sec_button.setIcon(_dot_icon(color))
+        self.sec_button.setText(' ' + short)
+        self.sec_button.setToolTip('Security level: ' + short
+                                   + ' -- click for details')
+
+    def _show_security_details(self):
+        color, short, detail = self._security_level()
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Security level: ' + short)
+        layout = QVBoxLayout(dialog)
+        heading = QLabel(short)
+        heading.setStyleSheet('font-weight:bold; color:%s; font-size:15px;' % color)
+        layout.addWidget(heading)
+        # a read-only, selectable body so the explanation can be copied and
+        # discussed (a tooltip is too small and cannot be copied)
+        body = QPlainTextEdit(detail)
+        body.setReadOnly(True)
+        body.setMinimumSize(460, 220)
+        layout.addWidget(body)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        copy = QPushButton('Copy')
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(detail))
+        buttons.addWidget(copy)
+        close = QPushButton('Close')
+        close.clicked.connect(dialog.accept)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        dialog.exec()
 
     def set_allow_title(self, enabled):
         term = self.current()
