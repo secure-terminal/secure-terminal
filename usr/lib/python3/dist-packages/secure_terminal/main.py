@@ -46,6 +46,10 @@ THEME_LABELS = [
 ]
 
 # menu / combo label -> display-mode key in terminal.DISPLAY_MODES
+# Shown in the About dialog. Kept in step with debian/changelog by hand (the
+# module ships as plain .py, so there is no package metadata to read at runtime).
+APP_VERSION = '0.0.1'
+
 # menu label -> scrollback limit in lines (0 = unlimited)
 SCROLLBACK_CHOICES = [
     ('1,000 lines', 1000),
@@ -854,6 +858,42 @@ class MainWindow(QMainWindow):
             'copy the path or open the folder.')
         act_locations.triggered.connect(self.show_locations)
         settings_menu.addAction(act_locations)
+
+        help_menu = bar.addMenu('&Help')
+        act_about = QAction(QIcon.fromTheme('help-about'), '&About', self)
+        act_about.triggered.connect(self.show_about)
+        help_menu.addAction(act_about)
+
+    def show_about(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('About secure-terminal')
+        layout = QVBoxLayout(dialog)
+        title = QLabel('secure-terminal ' + APP_VERSION)
+        title.setStyleSheet('font-weight:bold; font-size:16px;')
+        layout.addWidget(title)
+        body = QLabel(
+            'A terminal where paste is safe by construction.<br><br>'
+            'Program output is reduced to printable ASCII with no escape parser, '
+            'so a printed or pasted lie cannot redraw, reorder or hide what you '
+            'see. Pasting is sanitized and warned on. It is written in a '
+            'memory-safe language.<br><br>'
+            '<a href="https://secure-terminal.github.io">secure-terminal.github.io</a>'
+            '<br><a href="https://output-lies.github.io">output-lies.github.io</a>'
+            ' &ndash; the problem it removes<br><br>'
+            'Licensed under the GNU Affero General Public License v3 or later.')
+        body.setTextFormat(Qt.TextFormat.RichText)
+        body.setWordWrap(True)
+        body.setOpenExternalLinks(True)
+        body.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction)
+        layout.addWidget(body)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        close = QPushButton('Close')
+        close.clicked.connect(dialog.accept)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        dialog.exec()
 
     def _build_toolbar(self):
         bar = QToolBar('Main', self)
