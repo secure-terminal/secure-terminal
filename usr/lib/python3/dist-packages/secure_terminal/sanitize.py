@@ -135,19 +135,23 @@ def sanitize_title(text, limit=80):
     return ' '.join(''.join(kept).split())[:limit]
 
 
+def _cell_cp_safe(cp, mode):
+    if 0x20 <= cp <= 0x7E:
+        return True
+    return mode in ('show', 'reveal') and cp >= 0x80
+
+
 def tui_cell(ch, mode):
-    """Sanitize a single screen cell's character for TUI-mode display. Keeps
-    printable ASCII; renders a printable non-ASCII glyph only in 'show'/'reveal'
-    (a reveal <U+XXXX> badge cannot fit one fixed cell, so it collapses to the
-    glyph there); otherwise '_'. Always exactly one character, to preserve the
-    grid, and the invisible/bidi/format classes are still neutralized because
-    str.isprintable() excludes them."""
+    """Sanitize one screen cell for TUI-mode display. A pyte cell can hold more
+    than one codepoint (a base character plus combining marks form one grapheme,
+    one column), so this accepts a string of any length -- never assume length 1.
+    The whole grapheme is kept only when every codepoint is safe: printable ASCII,
+    or, in 'show'/'reveal', printable non-ASCII (str.isprintable() excludes the
+    invisible, bidi and format classes). Otherwise the cell becomes '_'. The
+    result is a single display unit, so the grid and the neutralization hold."""
     if not ch:
         return ' '
-    cp = ord(ch)
-    if 0x20 <= cp <= 0x7E:
-        return ch
-    if mode in ('show', 'reveal') and cp >= 0x80 and ch.isprintable():
+    if all(_cell_cp_safe(ord(c), mode) and c.isprintable() for c in ch):
         return ch
     return '_'
 

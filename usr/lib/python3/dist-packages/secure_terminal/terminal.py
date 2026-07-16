@@ -742,9 +742,15 @@ class SecureTerminal(QPlainTextEdit):
             return
 
         text = event.text()
-        if text and all(0x20 <= ord(c) <= 0x7E for c in text):
-            self._write(text.encode('ascii'))
-        # non-ASCII input and arrow/navigation keys are intentionally ignored
+        # Typed input is deliberate -- you pressed the key -- so printable
+        # non-ASCII (the euro sign, accents, CJK) is sent UTF-8 encoded. The
+        # deceptive classes cannot ride in this way: str.isprintable() is False
+        # for control, bidi, zero-width and format characters, and those are not
+        # reachable from a keyboard anyway. How it then DISPLAYS is still the
+        # display mode's call (strip shows '_', show shows the glyph).
+        if text and all(ch.isprintable() for ch in text):
+            self._write(text.encode('utf-8'))
+        # non-printable input and arrow/navigation keys are intentionally ignored
 
     def _tui_key(self, event):
         """Encode a keystroke as VT input for the program in TUI mode."""
@@ -773,9 +779,9 @@ class SecureTerminal(QPlainTextEdit):
         if text and len(text) == 1 and ord(text) < 0x20:
             self._write(text.encode('latin-1'))     # e.g. Ctrl+[ -> ESC
             return
-        if text and all(0x20 <= ord(c) <= 0x7E for c in text):
-            self._write((b'\x1b' if alt else b'') + text.encode('ascii'))
-        # non-ASCII input is still dropped
+        if text and all(ch.isprintable() for ch in text):
+            self._write((b'\x1b' if alt else b'') + text.encode('utf-8'))
+        # non-printable input is still dropped
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
