@@ -368,7 +368,10 @@ def sanitize_title(text, limit=80):
             kept.append(ch)
         elif ch in '\t\n\r\f\v':
             kept.append(' ')          # keep word boundaries, drop the control
-    return ' '.join(''.join(kept).split())[:limit]
+    # Collapse whitespace, then cap. Truncation can land on a space and leave a
+    # trailing one; strip it so the result is idempotent (re-sanitizing an
+    # already-sanitized title is a no-op, not a one-character-shorter string).
+    return ' '.join(''.join(kept).split())[:limit].strip()
 
 
 def _cell_cp_safe(cp, mode):
