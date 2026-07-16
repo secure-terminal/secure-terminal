@@ -1,0 +1,22 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+import os
+import sys
+
+## Run straight from a source checkout, not only when installed (see the GUI
+## launcher for the rationale).
+_dev = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    'lib', 'python3', 'dist-packages')
+if os.path.isdir(os.path.join(_dev, 'secure_terminal')):
+    sys.path.insert(0, _dev)
+
+from secure_terminal.cli import main
+
+if __name__ == '__main__':
+    sys.exit(main())
