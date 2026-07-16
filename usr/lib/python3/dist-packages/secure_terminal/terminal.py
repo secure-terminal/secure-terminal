@@ -164,6 +164,11 @@ class SecureTerminal(QPlainTextEdit):
         # cannot grow it without limit; the oldest output is dropped first.
         self._raw = ''
         self._RAW_MAX = 1_000_000
+        # A mode toggle only re-renders this much of the most-recent raw output,
+        # not the whole buffer: rendering the full scrollback (and reveal expands
+        # each byte to an 8-char <U+XXXX>) froze the UI on a flood. This tail is
+        # far more than a screenful, so what you can see is always re-rendered.
+        self._RERENDER_TAIL = 131072
 
         # optional ANSI colours (off by default); SGR parser state.
         self._colors = False
@@ -265,7 +270,9 @@ class SecureTerminal(QPlainTextEdit):
         self._out_cursor = None
         self._sgr_reset()                 # replay SGR colours from a clean slate
         if self._raw:
-            self._append_runs(self._render_runs(self._raw))
+            # Only the recent tail, so a mode toggle after a flood cannot freeze
+            # the UI re-rendering (and reveal-expanding) megabytes of scrollback.
+            self._append_runs(self._render_runs(self._raw[-self._RERENDER_TAIL:]))
 
     def current_mode(self):
         return self._mode
