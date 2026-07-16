@@ -159,6 +159,24 @@ def sanitize_paste(text):
     return ''.join(out)
 
 
+def sanitize_paste_unicode(text):
+    """Like sanitize_paste but KEEP printable non-ASCII (the euro sign, accents,
+    CJK) instead of dropping it, for a deliberate "paste with unicode". The
+    deceptive and injection classes are still removed: control characters, bidi
+    overrides, zero-width and other invisibles are all non-printable, so
+    str.isprintable() excludes them, and a paste can never smuggle a hidden
+    newline or an escape sequence this way either. Newlines still become the
+    carriage return the shell expects for a submitted line."""
+    out = []
+    for ch in text:
+        if ch == '\n' or ch == '\r':
+            out.append('\r')
+        elif ch == '\t' or ch.isprintable():
+            out.append(ch)
+        # control, bidi, zero-width, other invisibles -> dropped
+    return ''.join(out)
+
+
 def sanitize_title(text, limit=80):
     """Reduce a program-supplied window title or notification to safe plain
     ASCII: keep only printable ASCII (so no control, escape, bidi or homoglyph

@@ -52,7 +52,9 @@ This is a deliberately minimal, line-oriented terminal by default: TERM is
 "dumb" and no escapes are parsed. An opt-in TUI mode (apply_tui) interprets
 escapes through a pyte screen model so full-screen programs (ssh, vim, htop,
 tmux) work; even then every cell is still character-filtered and pyte
-has no OS reach (it cannot set the title or touch the clipboard). The window
+only builds a screen model, so program output cannot drive it to set the title
+or touch the clipboard the way a real terminal's escape handling can (the
+programs you run still have your normal user access). The window
 flags TUI mode with a visible risk indicator; the strict line mode remains the
 safe-by-construction default.
 """
@@ -83,6 +85,7 @@ from secure_terminal.sanitize import (
     THEMES, BASE_POINT_SIZE, ANSI_PALETTE, DISPLAY_MODES,
     ANSI_RE as _ANSI, SGR_RE as _SGR,
     colors_allowed, too_close, render_output, sanitize_paste,
+    sanitize_paste_unicode,
     paste_findings, parse_sgr, tui_cell, sanitize_title, apply_line_edits,
 )
 
@@ -1015,14 +1018,19 @@ class SecureTerminal(QPlainTextEdit):
         # A plain-ASCII paste goes straight through; only warn when the clipboard
         # carries unicode or control characters -- the case worth a second look.
         has_unicode, has_control = paste_findings(raw)
+        action = 'stripped'
         if has_unicode or has_control:
             from secure_terminal.dialog import PasteWarningDialog
-            if not PasteWarningDialog.confirm(raw, self._paste_delay, self):
+            action = PasteWarningDialog.confirm(raw, self._paste_delay, self)
+            if action == 'reject':
                 return
-        safe = sanitize_paste(raw)
+        # 'unicode' keeps printable non-ASCII (still no control/bidi/zero-width);
+        # 'stripped' is ASCII only. Both are safe to send as UTF-8.
+        safe = (sanitize_paste_unicode(raw) if action == 'unicode'
+                else sanitize_paste(raw))
         if not safe:
             return
-        data = safe.encode('ascii')
+        data = safe.encode('utf-8')
         # Bracketed paste when the TUI program asked for it (DEC mode 2004), so a
         # multi-line paste is delivered as data, not interpreted as keystrokes.
         if self.tui_active() and self._screen is not None \

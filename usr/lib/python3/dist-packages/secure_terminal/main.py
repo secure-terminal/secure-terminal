@@ -583,10 +583,14 @@ class MainWindow(QMainWindow):
                     'Mode: TUI (yellow).\n\n'
                     'Escape sequences are interpreted through a confined screen '
                     'model so full-screen programs (ssh, vim, htop, tmux) work. '
-                    'Every cell is still character-filtered and the model has no '
-                    'OS reach (no clipboard, and no window title unless you allow '
-                    'it). A program can still draw a misleading interface within '
-                    'its own screen, so only run programs you trust.\n\n'
+                    'Every cell is still character-filtered, and a program\'s '
+                    'output cannot drive that interpreter to act on the OS: it '
+                    'cannot set the clipboard, or the window title unless you '
+                    'allow it -- unlike terminals where an escape sequence can. '
+                    'This constrains escape sequences, not the programs: a '
+                    'program you run (nano, bash) has your normal user access, as '
+                    'in any terminal, and can still draw a misleading interface '
+                    'within its own screen, so only run programs you trust.\n\n'
                     'Turn TUI mode off to return to the safe line mode.')
         return ('#1f8a54', 'Line',
                 'Mode: LINE (green, the safe default).\n\n'
