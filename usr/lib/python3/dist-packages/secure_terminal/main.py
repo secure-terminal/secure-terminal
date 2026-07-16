@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget, QSizePolicy, QFileDialog, QInputDialog, QColorDialog,
     QMenu, QDialog, QGridLayout, QPushButton, QLineEdit,
     QVBoxLayout, QHBoxLayout, QPlainTextEdit,
-    QComboBox, QCheckBox, QFormLayout,
+    QComboBox, QCheckBox, QFormLayout, QMessageBox,
 )
 
 from secure_terminal import settings, session
@@ -879,6 +879,12 @@ class MainWindow(QMainWindow):
             'open tabs and to new ones.')
         act_global.triggered.connect(self.show_global_settings)
         settings_menu.addAction(act_global)
+        act_command = QAction('&Command...', self)
+        act_command.setShortcut(QKeySequence('Ctrl+Shift+P'))
+        act_command.setToolTip('Type a slash command to change a setting, e.g. '
+                               '/mode reveal or /help.')
+        act_command.triggered.connect(self.show_command_palette)
+        settings_menu.addAction(act_command)
         settings_menu.addSeparator()
         act_locations = QAction('&Folders & Files...', self)
         act_locations.setToolTip(
@@ -922,6 +928,60 @@ class MainWindow(QMainWindow):
         buttons.addWidget(close)
         layout.addLayout(buttons)
         dialog.exec()
+
+    _COMMAND_HELP = (
+        'Slash commands (the leading / is optional):\n\n'
+        '  /theme dark|light\n'
+        '  /mode strip|show|reveal\n'
+        '  /colors on|off\n'
+        '  /tui on|off\n'
+        '  /title on|off\n'
+        '  /zoom <25-400>\n'
+        '  /scrollback <lines, 0 = unlimited>\n'
+        '  /paste-delay <seconds>\n'
+        '  /help')
+
+    def show_command_palette(self):
+        text, ok = QInputDialog.getText(self, 'Command', 'Command (try /help):')
+        if ok and text.strip():
+            self.run_command(text)
+
+    def run_command(self, line):
+        """Apply a slash command to the current tab. Returns True when the command
+        was recognized and valid. A separate palette (not the shell line), so a
+        leading / never collides with an absolute-path program."""
+        parts = line.strip().lstrip('/').split()
+        if not parts:
+            return False
+        cmd = parts[0].lower()
+        arg = parts[1] if len(parts) > 1 else ''
+        low = arg.lower()
+        on = low in ('on', 'true', '1', 'yes')
+        off = low in ('off', 'false', '0', 'no')
+        if cmd == 'help':
+            QMessageBox.information(self, 'Commands', self._COMMAND_HELP)
+        elif cmd == 'theme' and low in THEMES:
+            self.set_theme(low)
+        elif cmd == 'mode' and low in DISPLAY_MODES:
+            self.set_mode(low)
+        elif cmd == 'colors' and (on or off):
+            self.set_colors(on)
+        elif cmd == 'tui' and (on or off):
+            self.set_tui(on)
+        elif cmd == 'title' and (on or off):
+            self.set_allow_title(on)
+        elif cmd == 'zoom' and arg.isdigit():
+            self.set_zoom(int(arg))
+        elif cmd == 'scrollback' and arg.isdigit():
+            self.set_scrollback(int(arg))
+        elif cmd in ('paste-delay', 'pastedelay') and arg.isdigit():
+            self.set_paste_delay(int(arg))
+        else:
+            self.statusBar().showMessage(
+                'Unknown or invalid command: ' + line.strip() + '  (try /help)',
+                5000)
+            return False
+        return True
 
     def show_global_settings(self):
         """One dialog for the defaults that otherwise live scattered across the
