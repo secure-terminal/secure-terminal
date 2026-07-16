@@ -1562,7 +1562,6 @@ class _Launch:
     def __init__(self):
         self.wm_class = None       # --class  -> WM_CLASS class / Wayland app-id
         self.wm_name = None        # --name   -> WM_CLASS instance (X11)
-        self.session = None        # --session FILE
         self.new_instance = False  # --new-instance -> never reuse a running one
         self.instance_group = 'default'   # --instance-group NAME
         self.qt_args = []          # unrecognized args, handed to Qt
@@ -1584,8 +1583,6 @@ def _launch_parser(with_globals):
                        help='window WM_CLASS / Wayland app-id (for WM rules)')
         p.add_argument('--name', dest='wm_name', metavar='NAME',
                        help='window WM_CLASS instance name (X11)')
-        p.add_argument('--session', metavar='FILE',
-                       help='open the tabs described in a session file')
         p.add_argument('--new-instance', dest='new_instance', action='store_true',
                        help='force a fresh process instead of reusing a running one')
         p.add_argument('--instance-group', dest='instance_group',
@@ -1630,7 +1627,6 @@ def _parse_launch_args(argv):
             launch.qt_args = leftover         # e.g. Qt's -platform / -style
             launch.wm_class = namespace.wm_class
             launch.wm_name = namespace.wm_name
-            launch.session = namespace.session
             launch.new_instance = namespace.new_instance
             launch.instance_group = namespace.instance_group
         else:
@@ -1651,7 +1647,7 @@ def _parse_launch_args(argv):
         launch.tabs.pop(0)
     # A bare "secure-terminal" (one empty group, no command/session) specifies no
     # tabs -> normal startup (restore session or a default tab).
-    if len(launch.tabs) == 1 and launch.session is None and _empty(launch.tabs[0]):
+    if len(launch.tabs) == 1 and _empty(launch.tabs[0]):
         launch.tabs = []
     return launch
 
