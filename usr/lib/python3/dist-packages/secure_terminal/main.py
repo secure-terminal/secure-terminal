@@ -172,6 +172,11 @@ class MainWindow(QMainWindow):
         # edited or stale config can never crash or set a bogus value. Changing
         # any of them (below) updates the default and re-persists.
         cfg = settings.load()
+        # Keys an admin locked via a privileged drop-in (/etc, /usr/local/etc).
+        # A locked setting cannot be changed by the user: its control is disabled,
+        # set_* refuses it, and it is never written back to the user config.
+        self._locked = cfg.locked
+        self._locked_violations = cfg.violations
         self._default_theme = cfg.get('theme') if cfg.get('theme') in THEMES \
             else 'dark'
         self._default_mode = cfg.get('unicode_mode') \
@@ -224,6 +229,7 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_toolbar()
         self._build_security_indicator()
+        self._apply_locks()
 
         # restore the previous session (tabs + scrollback) if enabled
         restored = session.load() if self._persist_session else []
@@ -516,6 +522,8 @@ class MainWindow(QMainWindow):
 
     # -- unicode display mode: per current tab --------------------------------
     def set_mode(self, mode):
+        if 'unicode_mode' in self._locked:
+            return                        # admin-locked; not user-changeable
         term = self.current()
         if term is not None:
             term.apply_mode(mode)
@@ -533,6 +541,8 @@ class MainWindow(QMainWindow):
             action.setChecked(True)
 
     def set_colors(self, enabled):
+        if 'colors' in self._locked:
+            return                        # admin-locked; not user-changeable
         term = self.current()
         if term is not None:
             term.apply_colors(enabled)
@@ -541,6 +551,8 @@ class MainWindow(QMainWindow):
         self._persist()
 
     def set_tui(self, enabled):
+        if 'tui' in self._locked:
+            return                        # admin-locked; not user-changeable
         term = self.current()
         if term is not None:
             term.apply_tui(enabled)
@@ -549,8 +561,10 @@ class MainWindow(QMainWindow):
                 # becomes '_'), so lean this TAB to 'show'. Do it on the term only
                 # -- NOT via set_mode, which would persist 'show' as the global
                 # default for every future tab -- and remember the prior mode so
-                # turning TUI off restores it.
-                if term.current_mode() == 'strip':
+                # turning TUI off restores it. Skip when the mode is admin-locked
+                # (forcing strip is a deliberate hardening choice to respect).
+                if term.current_mode() == 'strip' \
+                        and 'unicode_mode' not in self._locked:
                     self._pre_tui_mode[term] = term.current_mode()
                     term.apply_mode('show')
             else:
@@ -668,6 +682,8 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def set_allow_title(self, enabled):
+        if 'allow_title' in self._locked:
+            return                        # admin-locked; not user-changeable
         term = self.current()
         if term is not None:
             term.apply_allow_title(enabled)
@@ -717,7 +733,33 @@ class MainWindow(QMainWindow):
         except OSError:
             pass            # a failed save (bad path, no space) is not fatal
 
+    def _apply_locks(self):
+        """Reflect admin-locked settings in the UI: disable the controls the user
+        cannot change (greyed out with a note), and warn once if the user's own
+        config tried to override a lock (that override was ignored)."""
+        note = '\n\nLocked by the system administrator (a privileged drop-in in ' \
+               '/etc/secure-terminal.d).'
+        gated = [
+            ('unicode_mode', list(self._mode_actions.values())),
+            ('colors', [self.act_colors]),
+            ('tui', [self.act_tui]),
+            ('allow_title', [self.act_title]),
+        ]
+        for key, actions in gated:
+            if key in self._locked:
+                for act in actions:
+                    act.setEnabled(False)
+                    act.setToolTip(act.toolTip() + note)
+        if self._locked_violations:
+            keys = ', '.join(self._locked_violations)
+            msg = ('These settings are locked by the administrator; your home '
+                   'config for them was ignored: ' + keys)
+            self.statusBar().showMessage(msg, 15000)
+            sys.stderr.write('secure-terminal: ' + msg + '\n')
+
     def _persist(self):
+        # admin-locked keys are dropped by settings.save, so a locked setting is
+        # never written to (dead) user config.
         settings.save({
             'theme': self._default_theme,
             'zoom': str(self._default_zoom),
@@ -728,7 +770,7 @@ class MainWindow(QMainWindow):
             'tui': 'true' if self._default_tui else 'false',
             'allow_title': 'true' if self._default_allow_title else 'false',
             'persist_session': 'true' if self._persist_session else 'false',
-        })
+        }, locked=self._locked)
 
     # -- chrome ---------------------------------------------------------------
     def _build_menu(self):
@@ -1149,6 +1191,14 @@ class MainWindow(QMainWindow):
         defaults. TUI mode changes only the default for new tabs -- switching it
         would restart the shell in each existing tab, throwing away running work,
         which a settings dialog must not do."""
+        # A locked key keeps its admin value regardless of what the dialog returns.
+        for key, field, current in (
+                ('unicode_mode', 'mode', self._default_mode),
+                ('colors', 'colors', self._default_colors),
+                ('tui', 'tui', self._default_tui),
+                ('allow_title', 'allow_title', self._default_allow_title)):
+            if key in self._locked:
+                opts[field] = current
         self._default_theme = opts['theme']
         self._default_zoom = opts['zoom']
         self._default_mode = opts['mode']
