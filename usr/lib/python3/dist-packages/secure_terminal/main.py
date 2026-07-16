@@ -9,14 +9,14 @@ import os
 import signal
 import sys
 
-from PyQt6.QtCore import QTimer, Qt, QUrl, qInstallMessageHandler
+from PyQt6.QtCore import QTimer, Qt, QUrl, QRect, qInstallMessageHandler
 from PyQt6.QtGui import (
     QAction, QActionGroup, QKeySequence, QIcon, QColor, QPixmap,
-    QDesktopServices,
+    QPainter, QBrush, QFont, QDesktopServices,
 )
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QToolBar, QSpinBox, QLabel,
-    QWidget, QSizePolicy, QComboBox, QFileDialog, QInputDialog, QColorDialog,
+    QWidget, QSizePolicy, QFileDialog, QInputDialog, QColorDialog,
     QMenu, QDialog, QGridLayout, QPushButton, QLineEdit,
 )
 
@@ -45,12 +45,6 @@ THEME_LABELS = [
 ]
 
 # menu / combo label -> display-mode key in terminal.DISPLAY_MODES
-MODE_LABELS = [
-    ('Strip unicode (safe)', 'strip'),
-    ('Show unicode', 'show'),
-    ('Reveal unicode', 'reveal'),
-]
-
 # menu label -> scrollback limit in lines (0 = unlimited)
 SCROLLBACK_CHOICES = [
     ('1,000 lines', 1000),
@@ -66,6 +60,36 @@ PASTE_DELAY_CHOICES = [
     ('3 seconds', 3),
     ('5 seconds', 5),
 ]
+
+
+def _letter_icon(letter, color):
+    """A small rounded-square icon with a single ASCII letter, used as the drawn
+    fallback when the desktop icon theme has no fitting symbol. ASCII-only and
+    always available, so a toolbar toggle is never left iconless."""
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QBrush(QColor(color)))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawRoundedRect(1, 1, 14, 14, 3, 3)
+    painter.setPen(QColor('#ffffff'))
+    font = QFont()
+    font.setPixelSize(11)
+    font.setBold(True)
+    painter.setFont(font)
+    painter.drawText(QRect(0, 0, 16, 16), Qt.AlignmentFlag.AlignCenter, letter)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _toggle_icon(theme_name, letter, color):
+    """Prefer the desktop theme's symbol for a toolbar toggle; fall back to a
+    drawn letter chip when the theme lacks it, so the button always has a mark."""
+    icon = QIcon.fromTheme(theme_name)
+    if not icon.isNull():
+        return icon
+    return _letter_icon(letter, color)
 
 
 class MainWindow(QMainWindow):
@@ -119,7 +143,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
 
         self._theme_actions = {}
-        self._mode_actions = {}
         self._user_titles = {}       # term -> user-set tab name
         self._prog_titles = {}       # term -> program (OSC) title
         self._tab_colors = {}        # term -> tab colour name (for persistence)
@@ -350,12 +373,7 @@ class MainWindow(QMainWindow):
         active = term.current_theme()
         for key, action in self._theme_actions.items():
             action.setChecked(key == active)
-        mode = term.current_mode()
-        for key, action in self._mode_actions.items():
-            action.setChecked(key == mode)
-        self.mode_box.blockSignals(True)
-        self.mode_box.setCurrentIndex(self.mode_box.findData(mode))
-        self.mode_box.blockSignals(False)
+        self._sync_mode_toggles(term.current_mode())
         self.act_colors.setChecked(term.colors_enabled())
         self.act_tui.setChecked(term.current_tui())
         self.act_title.setChecked(term.allow_title_enabled())
@@ -405,17 +423,32 @@ class MainWindow(QMainWindow):
         term = self.current()
         if term is not None:
             term.apply_mode(mode)
-        # keep menu + combo in agreement whichever was used
-        for key, action in self._mode_actions.items():
-            action.setChecked(key == mode)
-        self.mode_box.blockSignals(True)
-        self.mode_box.setCurrentIndex(self.mode_box.findData(mode))
-        self.mode_box.blockSignals(False)
+        self._sync_mode_toggles(mode)
         self._default_mode = mode
         self._persist()
 
-    def _on_mode_box(self, index):
-        self.set_mode(self.mode_box.itemData(index))
+    def _sync_mode_toggles(self, mode):
+        """Reflect the display mode in the Show/Reveal toggles without
+        re-triggering them: Show on for 'show', Reveal on for 'reveal', both off
+        for the safe 'strip' default."""
+        for action, key in ((self.act_show, 'show'), (self.act_reveal, 'reveal')):
+            action.blockSignals(True)
+            action.setChecked(mode == key)
+            action.blockSignals(False)
+
+    def _on_show_toggled(self, on):
+        # set_mode('show') syncs Reveal off; unchecking Show falls back to Strip
+        # unless Reveal is on.
+        if on:
+            self.set_mode('show')
+        elif not self.act_reveal.isChecked():
+            self.set_mode('strip')
+
+    def _on_reveal_toggled(self, on):
+        if on:
+            self.set_mode('reveal')
+        elif not self.act_show.isChecked():
+            self.set_mode('strip')
 
     def set_colors(self, enabled):
         term = self.current()
@@ -620,19 +653,33 @@ class MainWindow(QMainWindow):
             theme_menu.addAction(act)
             self._theme_actions[key] = act
 
+        # Two on/off toggles instead of a three-way choice: off/off is Strip (the
+        # safe default), Show renders glyphs, Reveal shows <U+XXXX> badges; each
+        # turns the other off.
         mode_menu = view_menu.addMenu('&Unicode')
-        mode_group = QActionGroup(self)
-        mode_group.setExclusive(True)
-        for label, key in MODE_LABELS:
-            act = QAction(label, self, checkable=True)
-            act.setChecked(key == self._default_mode)
-            act.triggered.connect(lambda _checked, k=key: self.set_mode(k))
-            mode_group.addAction(act)
-            mode_menu.addAction(act)
-            self._mode_actions[key] = act
+        self.act_show = QAction(
+            _toggle_icon('accessories-character-map', 'S', '#1f8a54'),
+            '&Show unicode', self, checkable=True)
+        self.act_show.setToolTip(
+            'Render legitimate non-ASCII output as its glyph instead of "_". Off '
+            'is the safe default (strip). The invisible, bidi and control classes '
+            'are still neutralized.')
+        self.act_show.toggled.connect(self._on_show_toggled)
+        mode_menu.addAction(self.act_show)
+        self.act_reveal = QAction(
+            _toggle_icon('edit-find', 'R', '#8250df'),
+            '&Reveal unicode', self, checkable=True)
+        self.act_reveal.setToolTip(
+            'Show every non-ASCII character as a <U+XXXX> badge, to inspect '
+            'exactly what is there. Turning it on turns Show off.')
+        self.act_reveal.toggled.connect(self._on_reveal_toggled)
+        mode_menu.addAction(self.act_reveal)
+        self._sync_mode_toggles(self._default_mode)
 
         view_menu.addSeparator()
-        self.act_colors = QAction('&Colors', self, checkable=True)
+        self.act_colors = QAction(
+            _toggle_icon('format-text-color', 'C', '#0969da'),
+            '&Colors', self, checkable=True)
         self.act_colors.setChecked(self._default_colors)
         self.act_colors.setToolTip(
             'Render a safe subset of ANSI colors (16-color SGR) in the current '
@@ -641,7 +688,8 @@ class MainWindow(QMainWindow):
         self.act_colors.toggled.connect(self.set_colors)
         view_menu.addAction(self.act_colors)
 
-        self.act_tui = QAction('&TUI mode', self, checkable=True)
+        self.act_tui = QAction(_toggle_icon('utilities-terminal', 'T', '#e5a50a'),
+                               '&TUI mode', self, checkable=True)
         self.act_tui.setChecked(self._default_tui)
         self.act_tui.setEnabled(tui_available())
         self.act_tui.setToolTip(TUI_TOOLTIP)
@@ -650,8 +698,9 @@ class MainWindow(QMainWindow):
         self.act_tui.toggled.connect(self.set_tui)
         view_menu.addAction(self.act_tui)
 
-        self.act_title = QAction('Allow program &title / notifications', self,
-                                 checkable=True)
+        self.act_title = QAction(
+            _toggle_icon('preferences-desktop-notification', 'N', '#bf3989'),
+            'Allow program &title / notifications', self, checkable=True)
         self.act_title.setChecked(self._default_allow_title)
         self.act_title.setToolTip(
             'Let a program set the tab title (OSC 0/2) and send notifications '
@@ -725,16 +774,8 @@ class MainWindow(QMainWindow):
                              QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
 
-        bar.addWidget(QLabel('Unicode ', bar))
-        self.mode_box = QComboBox(bar)
-        for label, key in MODE_LABELS:
-            self.mode_box.addItem(label, key)
-        self.mode_box.setCurrentIndex(self.mode_box.findData(self._default_mode))
-        self.mode_box.setToolTip(
-            'How the current tab shows non-ASCII output: Strip (safe, default), '
-            'Show (render legitimate unicode), or Reveal (as <U+XXXX> to inspect)')
-        self.mode_box.currentIndexChanged.connect(self._on_mode_box)
-        bar.addWidget(self.mode_box)
+        bar.addAction(self.act_show)
+        bar.addAction(self.act_reveal)
         bar.addAction(self.act_colors)
         bar.addSeparator()
 
