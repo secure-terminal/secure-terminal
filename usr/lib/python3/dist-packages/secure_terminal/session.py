@@ -6,23 +6,31 @@
 """Session persistence: the open tabs and their scrollback, so they survive a
 restart or reboot.
 
-Stored under the XDG state directory (~/.local/state/secure-terminal/session.json)
-because it is restorable session state, not configuration. JSON is used rather
-than the KEY=value settings format because a tab's scrollback is multi-line
-text; json.load runs no code, so it stays safe to parse. Loading is defensive: a
-missing or malformed file yields an empty session and never crashes.
+Stored under the XDG state directory (~/.local/state/secure-terminal/). Each
+tab's scrollback -- the bulky part -- lives in its own file, tab-0.log,
+tab-1.log, ..., and a small session.json holds only the index: the tab order and
+each tab's name/colour/settings. Splitting the logs out keeps the index tiny and
+readable, lets one tab's scrollback be inspected or removed on its own, and
+avoids rewriting one large blob for every tab. JSON is used for the index because
+json.load runs no code, so it stays safe to parse; the .log files are plain
+already-sanitized ASCII text. Loading is defensive: a missing or malformed file
+yields an empty session and never crashes.
 
 A running program (bash, nano, ...) cannot be resurrected -- only the tab list,
-each tab's name/colour/settings and its (already sanitized, ASCII) scrollback are
-saved, and a fresh shell starts under the restored history.
+each tab's name/colour/settings and its scrollback are saved, and a fresh shell
+starts under the restored history.
 """
 
 import os
+import re
 import json
 
-# A hard cap on the persisted scrollback of an "unlimited" tab, so the session
-# file cannot grow without bound on disk even when no line limit is set.
+# A hard cap on the persisted scrollback of an "unlimited" tab, so a log file
+# cannot grow without bound on disk even when no line limit is set.
 UNLIMITED_PERSIST_LINES = 5000
+
+# tab-<n>.log -- one scrollback file per tab, numbered by position.
+_LOG_RE = re.compile(r'^tab-(\d+)\.log$')
 
 
 def _state_dir():
@@ -35,6 +43,24 @@ def session_path():
     return os.path.join(_state_dir(), 'session.json')
 
 
+def _log_path(index):
+    return os.path.join(_state_dir(), 'tab-%d.log' % index)
+
+
+def _log_indices():
+    """Positions of the tab-<n>.log files currently on disk."""
+    try:
+        names = os.listdir(_state_dir())
+    except OSError:
+        return []
+    found = []
+    for name in names:
+        match = _LOG_RE.match(name)
+        if match:
+            found.append(int(match.group(1)))
+    return sorted(found)
+
+
 def cap_text(text, scrollback):
     """Trim scrollback text to the tab's line limit (or the hard cap when the
     tab is unlimited), keeping the most recent lines."""
@@ -45,33 +71,66 @@ def cap_text(text, scrollback):
     return '\n'.join(lines)
 
 
+def _write_atomic(path, text):
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as handle:
+        handle.write(text)
+    os.replace(tmp, path)
+
+
 def save(tabs):
-    """Write the list of tab dicts. Never raises."""
+    """Write the list of tab dicts: each tab's 'text' scrollback to its own
+    tab-<n>.log, the rest as the index in session.json. Never raises."""
     path = session_path()
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + '.tmp'
-        with open(tmp, 'w', encoding='utf-8') as handle:
-            json.dump({'tabs': tabs}, handle)
-        os.replace(tmp, path)
+        os.makedirs(_state_dir(), exist_ok=True)
+        index = []
+        for position, tab in enumerate(tabs):
+            entry = {key: value for key, value in tab.items() if key != 'text'}
+            _write_atomic(_log_path(position), tab.get('text', ''))
+            index.append(entry)
+        # Drop log files left over from a previous, larger session.
+        for stale in _log_indices():
+            if stale >= len(tabs):
+                _remove(_log_path(stale))
+        _write_atomic(path, json.dumps({'tabs': index}))
     except OSError:
         pass                    # a failed session save is never fatal
 
 
 def load():
-    """Return the list of saved tab dicts, or []. Never raises."""
+    """Return the list of saved tab dicts (each with its 'text' scrollback read
+    back from its log file), or []. Never raises."""
     try:
         with open(session_path(), encoding='utf-8') as handle:
             data = json.load(handle)
     except (OSError, ValueError):
         return []               # no/corrupt session -> start fresh
-    tabs = data.get('tabs') if isinstance(data, dict) else None
-    return tabs if isinstance(tabs, list) else []
+    index = data.get('tabs') if isinstance(data, dict) else None
+    if not isinstance(index, list):
+        return []
+    tabs = []
+    for position, entry in enumerate(index):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            with open(_log_path(position), encoding='utf-8') as handle:
+                entry['text'] = handle.read()
+        except OSError:
+            entry['text'] = ''  # a missing log just restores an empty tab
+        tabs.append(entry)
+    return tabs
+
+
+def _remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass                    # nothing there -> nothing to remove
 
 
 def clear():
-    """Remove the saved session. Never raises."""
-    try:
-        os.remove(session_path())
-    except OSError:
-        pass                    # nothing saved -> nothing to clear
+    """Remove the saved session: the index and every per-tab log. Never raises."""
+    _remove(session_path())
+    for index in _log_indices():
+        _remove(_log_path(index))
