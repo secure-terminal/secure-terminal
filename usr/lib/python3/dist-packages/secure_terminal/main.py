@@ -245,7 +245,16 @@ class MainWindow(QMainWindow):
         # (double-click to rename the title, right-click for rename/colour/close).
         bar.setCursor(Qt.CursorShape.PointingHandCursor)
         bar.setToolTip('Double-click to rename this tab; right-click for more.')
-        self.setCentralWidget(self.tabs)
+        # a dismissible advisory banner ABOVE the tabs (not injected into any
+        # terminal, so an advisory can never be copied as program output).
+        central = QWidget(self)
+        col = QVBoxLayout(central)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        self._banner = self._make_banner()
+        col.addWidget(self._banner)
+        col.addWidget(self.tabs)
+        self.setCentralWidget(central)
 
         self._theme_actions = {}
         self._user_titles = {}       # term -> user-set tab name
@@ -297,6 +306,7 @@ class MainWindow(QMainWindow):
         term.title_changed.connect(
             lambda title, t=term: self._on_tab_title(t, title))
         term.notified.connect(self._on_notify)
+        term.advise_signal.connect(self._show_advisory)
         index = self.tabs.addTab(term, term.cwd_basename() or 'shell')
         self.tabs.setCurrentIndex(index)
         # auto-colour the new tab so it differs from its neighbour, unless one is
@@ -317,6 +327,41 @@ class MainWindow(QMainWindow):
         self._sync_chrome_to_tab()
         term.setFocus()
         return index
+
+    def _make_banner(self):
+        """A dismissible, yellowish advisory banner shown above the tabs. Its text
+        is selectable/copyable but lives OUTSIDE any terminal document, so it is
+        never mistaken for -- or copied as -- program output."""
+        frame = QFrame(self)
+        frame.setObjectName('advisory')
+        frame.setVisible(False)
+        frame.setStyleSheet(
+            '#advisory{background:#fdf3d0;border-bottom:1px solid #e5c975}'
+            '#advisory QLabel{color:#6b5510;font-size:13px}'
+            '#advisory QPushButton{border:none;background:transparent;'
+            'color:#6b5510;font-size:15px;font-weight:700}'
+            '#advisory QPushButton:hover{color:#3a2e08}')
+        row = QHBoxLayout(frame)
+        row.setContentsMargins(14, 8, 8, 8)
+        row.setSpacing(10)
+        row.addWidget(QLabel('\u26a0', frame))          # warning sign
+        self._banner_label = QLabel(frame)
+        self._banner_label.setWordWrap(True)
+        self._banner_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        row.addWidget(self._banner_label, 1)
+        close = QPushButton('\u2715', frame)            # X
+        close.setFixedSize(24, 24)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setFocusPolicy(Qt.FocusPolicy.NoFocus)    # do not steal the caret
+        close.setToolTip('Dismiss')
+        close.clicked.connect(lambda: frame.setVisible(False))
+        row.addWidget(close)
+        return frame
+
+    def _show_advisory(self, message):
+        self._banner_label.setText(message)
+        self._banner.setVisible(True)
 
     def _on_tab_step(self, step):
         """Ctrl+PageUp/Down: move to the previous/next tab, wrapping around."""

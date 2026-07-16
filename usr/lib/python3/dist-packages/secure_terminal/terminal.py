@@ -161,6 +161,10 @@ class SecureTerminal(QPlainTextEdit):
     tab_move = pyqtSignal(int)
     # the command hook produced an advisory message to surface (status bar)
     hook_notice = pyqtSignal(str)
+    # An advisory from the terminal itself (e.g. "turn on TUI mode"). Emitted, NOT
+    # injected into the document: injected text is unfaithful -- it could be
+    # selected and copied into a transcript as if a program printed it.
+    advise_signal = pyqtSignal(str)
     # a program set the title / sent a notification (only when allowed)
     title_changed = pyqtSignal(str)
     notified = pyqtSignal(str)
@@ -821,13 +825,10 @@ class SecureTerminal(QPlainTextEdit):
         self._feed_line(text)
 
     def _advise(self, message):
-        """Show a one-line advisory from the terminal itself (not the running
-        program), clearly marked so it cannot be mistaken for program output and
-        rendered in yellow when colours are on."""
-        saved = self._sgr
-        self._sgr = {'fg': 3, 'bg': None, 'bold': True}      # yellow, bold
-        self._feed_line('\n[secure-terminal] ' + message + '\n')
-        self._sgr = saved
+        """Emit a one-line advisory from the terminal itself (not the running
+        program). The window shows it as a dismissible banner OUTSIDE the terminal
+        document, so it is never mistaken for -- or copied as -- program output."""
+        self.advise_signal.emit(message)
 
     def _echo_caret(self, s):
         """Locally echo a signal key in caret notation (^C, ^\\) so pressing it is
