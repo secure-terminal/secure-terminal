@@ -293,8 +293,8 @@ class SecureTerminal(QPlainTextEdit):
         self.setPalette(pal)
         self._fmt_cache = {}          # theme changes the resolved cell colours
         self._line_fmt_cache = {}     # and the line-mode SGR format cache
-        if self.tui_active():
-            self._render_timer.start(16)
+        if self._grid_mode():         # repaint the grid ONLY while it owns the
+            self._render_timer.start(16)   # screen; line-TUI keeps its scrollback
 
     def apply_zoom(self, percent):
         percent = max(10, min(1000, int(percent)))
@@ -304,7 +304,7 @@ class SecureTerminal(QPlainTextEdit):
         font.setPointSize(size)
         self.setFont(font)
         self._sync_tui_size()          # font change resizes the grid
-        if self.tui_active():
+        if self._grid_mode():
             self._render_timer.start(16)   # repaint at the new glyph size
 
     def current_zoom(self):

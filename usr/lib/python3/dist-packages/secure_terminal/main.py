@@ -188,7 +188,7 @@ class MainWindow(QMainWindow):
         self._default_theme = cfg.get('theme') if cfg.get('theme') in THEMES \
             else 'dark'
         self._default_mode = cfg.get('unicode_mode') \
-            if cfg.get('unicode_mode') in DISPLAY_MODES else 'strip'
+            if cfg.get('unicode_mode') in DISPLAY_MODES else 'detail'
         # Colours on by default: with a capable TERM the shell prompt, ls, git
         # and friends emit SGR colour, and a terminal that silently dropped it
         # looks broken. Parsing is bounded (16 palette colours) and the renderer's
@@ -753,6 +753,8 @@ class MainWindow(QMainWindow):
         self._persist()
 
     def set_markings(self, enabled):
+        if 'colored_markings' in self._locked:
+            return                        # admin-locked; not user-changeable
         term = self.current()
         if term is not None:
             term.apply_markings(enabled)
@@ -767,13 +769,14 @@ class MainWindow(QMainWindow):
         if term is not None:
             term.apply_tui(enabled)
             if enabled:
-                # A strip-stripped screen makes a TUI unreadable (box-drawing
-                # becomes '_'), so lean this TAB to 'show'. Do it on the term only
-                # -- NOT via set_mode, which would persist 'show' as the global
-                # default for every future tab -- and remember the prior mode so
-                # turning TUI off restores it. Skip when the mode is admin-locked
-                # (forcing strip is a deliberate hardening choice to respect).
-                if term.current_mode() == 'strip' \
+                # Any non-'show' mode makes a TUI unreadable (box-drawing becomes
+                # '_' in strip, or a badge in reveal/detail that breaks the grid),
+                # so lean this TAB to 'show'. Do it on the term only -- NOT via
+                # set_mode, which would persist 'show' as the global default for
+                # every future tab -- and remember the prior mode so turning TUI
+                # off restores it. Skip when the mode is admin-locked (a forced
+                # mode is a deliberate hardening choice to respect).
+                if term.current_mode() != 'show' \
                         and 'unicode_mode' not in self._locked:
                     self._pre_tui_mode[term] = term.current_mode()
                     term.apply_mode('show')
@@ -967,6 +970,7 @@ class MainWindow(QMainWindow):
         gated = [
             ('unicode_mode', list(self._mode_actions.values())),
             ('colors', [self.act_colors]),
+            ('colored_markings', [self.act_markings]),
             ('tui', [self.act_tui]),
             ('allow_title', [self.act_title]),
         ]
@@ -1391,8 +1395,8 @@ class MainWindow(QMainWindow):
         form.addRow('Zoom', zoom)
 
         mode = QComboBox()
-        for label, key in (('Strip (safe)', 'strip'), ('Show unicode', 'show'),
-                           ('Reveal unicode', 'reveal')):
+        for label, key in (('Strip (safe)', 'strip'), ('Reveal unicode', 'reveal'),
+                           ('Detail (named)', 'detail'), ('Show unicode', 'show')):
             mode.addItem(label, key)
         mode.setCurrentIndex(mode.findData(self._default_mode))
         form.addRow('Unicode', mode)

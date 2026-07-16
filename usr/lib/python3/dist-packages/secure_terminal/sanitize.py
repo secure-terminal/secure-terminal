@@ -325,8 +325,21 @@ def marking_class(cp):
 # distinct from an SGR-state key (a sorted-items tuple) or None.
 MARK_KEY = '\x00mark'
 
+# sentinel key for a newline that is a SOFT autowrap (the line filled the width),
+# not a real line break -- the widget marks the following block a continuation so
+# copy joins the wrapped rows, like a real terminal. A completed cell-line of
+# exactly `wrap` cells is a wrap: a \n-ended line always has fewer, because
+# reaching `wrap` cells wraps before any later \n.
+WRAP_NL = '\x00wrap'
 
-def cells_to_runs(lines, current, mode, colors, markings=True):
+# Beyond this many runs, stop per-character marking colour so a flood of
+# alternating safe/marking characters re-coalesces into a few plain runs instead
+# of one Qt insert per character -- preserving the flood-coalescing guard. A
+# screenful of alternating chars is far below this, so real display is unaffected.
+_RUN_CAP = 2000
+
+
+def cells_to_runs(lines, current, mode, colors, markings=True, wrap=0):
     r"""Render finished cell-lines plus the current cell-line to a coalesced list
     of (display_text, sgr_key) runs, with '\n' between the finished lines and
     before the current one. Each cell's char is rendered via render_output (so the
@@ -347,8 +360,9 @@ def cells_to_runs(lines, current, mode, colors, markings=True):
         disp = render_output(ch, mode)
         # a neutralized/revealed char (its display differs from the source) is a
         # "marking"; colour it by risk class when colored markings are on --
-        # independent of the ANSI-colour toggle.
-        if markings and disp != ch:
+        # independent of the ANSI-colour toggle. Past _RUN_CAP runs (a flood),
+        # stop marking so the runs re-coalesce and the UI cannot wedge.
+        if markings and disp != ch and len(runs) < _RUN_CAP:
             add(disp, (MARK_KEY, marking_class(ord(ch))))
         else:
             add(disp, key if colors else None)
