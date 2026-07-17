@@ -67,6 +67,8 @@ import pty
 import re
 import copy
 import time
+import base64
+import urllib.parse
 import fcntl
 import signal
 import codecs
@@ -96,7 +98,7 @@ from secure_terminal.sanitize import (
     paste_findings, tui_cell, sanitize_title,
     feed_line_edits, cells_to_runs, cells_display_col, MARK_KEY, WRAP_NL,
     wants_full_screen, leaves_full_screen, describe_codepoint, marking_class,
-    split_trailing_escape,
+    split_trailing_escape, OSC_FEATURES,
     _ALT_SCREEN as _ALT_ENTER, _ALT_SCREEN_OFF as _ALT_LEAVE,
 )
 
@@ -113,8 +115,10 @@ _RISK_LABELS = {
     'nonascii':  'other non-ASCII -- can be a look-alike (homoglyph)',
 }
 
-# OSC 9 ";<text>" (BEL or ST terminated): the iTerm2-style desktop notification.
-_OSC9 = re.compile(rb'\x1b\]9;([^\x07\x1b]*)(?:\x07|\x1b\\)')
+# Any numeric-code OSC: ESC ] <code> ; <params> (BEL | ST). The dispatcher acts on
+# the codes for enabled OSC features and ignores the rest (still stripped).
+_OSC_ANY = re.compile(rb'\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)')
+_OSC_CLIP_MAX = 64 * 1024        # cap a clipboard payload; no unbounded writes
 
 # Alternate-screen enter/leave, as BYTES: pyte has no alt buffer, so the feed path
 # acts on these to snapshot/restore the primary screen at the exact boundary.
@@ -191,6 +195,8 @@ class SecureTerminal(QPlainTextEdit):
     # a program set the title / sent a notification (only when allowed)
     title_changed = pyqtSignal(str)
     notified = pyqtSignal(str)
+    # a program reported its working directory via OSC 7 (only when osc_cwd is on)
+    cwd_changed = pyqtSignal(str)
 
     def __init__(self, parent=None, command=None, tui=False, history=''):
         super().__init__(parent)
@@ -277,11 +283,13 @@ class SecureTerminal(QPlainTextEdit):
         # would destroy the primary screen and pollute the scrollback.
         self._alt_saved = None
 
-        # "modern terminal protocol": let a program set the title / notify.
-        # Off by default; only has an effect in TUI mode (line mode strips
-        # escapes). OSC 52 clipboard and OSC 8 hyperlinks stay blocked regardless.
-        self._allow_title = False
+        # OSC features a program may reach OUT of the grid with (title, notify,
+        # clipboard, hyperlink, palette, cwd, iTerm2). Each is honored ONLY when
+        # the user enabled it AND only in TUI mode (line mode strips all escapes).
+        # Off by default -- every one is a spoofing/exfiltration surface.
+        self._osc = {key: False for key, *_rest in OSC_FEATURES}
         self._last_title = ''
+        self._reported_cwd = ''       # OSC 7 working directory, when osc_cwd is on
         # persistent output cursor for line mode (see _paint_line)
         self._out_cursor = None
         # the current (editable) line held as LOGICAL cells (source_char, sgr_key)
@@ -479,11 +487,24 @@ class SecureTerminal(QPlainTextEdit):
     def current_tui(self):
         return self._tui
 
+    def apply_osc(self, key, enabled):
+        """Enable/disable one OSC feature (see OSC_FEATURES) for this tab."""
+        if key in self._osc:
+            self._osc[key] = bool(enabled)
+
+    def osc_enabled(self, key):
+        return self._osc.get(key, False)
+
+    def any_osc_enabled(self):
+        return any(self._osc.values())
+
+    # -- compatibility: "allow title/notifications" == the title + notify OSCs ---
     def apply_allow_title(self, enabled):
-        self._allow_title = bool(enabled)
+        self.apply_osc('osc_title', enabled)
+        self.apply_osc('osc_notify', enabled)
 
     def allow_title_enabled(self):
-        return self._allow_title
+        return self._osc['osc_title'] or self._osc['osc_notify']
 
     def tui_active(self):
         return getattr(self, '_tui', False) and tui_available()
@@ -891,10 +912,10 @@ class SecureTerminal(QPlainTextEdit):
                 self._make_screen()
             self._feed_stream(data)
 
-        # Titles/notifications are a TUI-mode feature, independent of whether a
-        # full-screen program currently owns the grid.
-        if self.tui_active() and self._allow_title:
-            self._handle_title_and_notify(data)
+        # OSC side-effects (title, notify, clipboard, colours, cwd, iTerm2) are a
+        # TUI-mode feature, each honored only when the user enabled it.
+        if self.tui_active() and self.any_osc_enabled():
+            self._handle_osc(data)
 
         # Retain the raw output in BOTH modes -- for a mode re-render (TUI->CLI)
         # and for seeding the TUI grid (CLI->TUI) -- so neither switch loses output.
@@ -990,19 +1011,68 @@ class SecureTerminal(QPlainTextEdit):
         self._alt_saved = None
         self._reset_grid_view()           # rebuild scrollback from restored history
 
-    def _handle_title_and_notify(self, data):
-        """When the "modern protocol" setting is on, surface the program's title
-        (OSC 0/2, captured by pyte) and notifications (OSC 9). Everything is
-        sanitized to plain ASCII first, so a title or notification cannot carry
-        an escape, control or homoglyph."""
-        title = sanitize_title(getattr(self._screen, 'title', ''))
-        if title and title != self._last_title:
-            self._last_title = title
-            self.title_changed.emit(title)
-        for match in _OSC9.finditer(data):
-            text = sanitize_title(match.group(1).decode('ascii', 'ignore'))
-            if text:
-                self.notified.emit(text)
+    def _handle_osc(self, data):
+        """Dispatch a program's OSC escapes to the features the user has ENABLED
+        (each off by default); every value is validated and sanitized first, so a
+        title/notification/path can never carry an escape, control or homoglyph.
+        Only ever called in TUI mode. Palette (OSC 4/10/11/12) and hyperlinks
+        (OSC 8) are display-affecting and handled in the render path, not here."""
+        if self._osc['osc_title']:
+            title = sanitize_title(getattr(self._screen, 'title', ''))
+            if title and title != self._last_title:
+                self._last_title = title
+                self.title_changed.emit(title)
+        for match in _OSC_ANY.finditer(data):
+            code = int(match.group(1))
+            params = match.group(2)
+            if code == 9 and self._osc['osc_notify']:
+                text = sanitize_title(params.decode('ascii', 'ignore'))
+                if text:
+                    self.notified.emit(text)
+            elif code == 52 and self._osc['osc_clipboard']:
+                self._osc_clipboard(params)
+            elif code == 7 and self._osc['osc_cwd']:
+                self._osc_cwd(params)
+            elif code == 1337 and self._osc['osc_iterm2']:
+                self._osc_iterm2(params)
+
+    def _osc_clipboard(self, params):
+        """OSC 52: <selection>;<base64|'?'>. WRITE only; a read query ('?') is
+        DECLINED -- answering would exfiltrate your clipboard to the program AND
+        write onto its input. The decoded text is stripped of control/escape bytes
+        before it reaches the clipboard, and bounded in size."""
+        parts = params.split(b';', 1)
+        if len(parts) != 2:
+            return
+        payload = parts[1]
+        if payload in (b'?', b'') or len(payload) > _OSC_CLIP_MAX:
+            return                        # read/clear query or oversized: decline
+        try:
+            text = base64.b64decode(payload, validate=True).decode('utf-8', 'replace')
+        except (ValueError, base64.binascii.Error):
+            return
+        text = ''.join(ch for ch in text
+                       if ch in '\n\t' or 0x20 <= ord(ch) and ch != '\x7f')
+        QGuiApplication.clipboard().setText(text)
+
+    def _osc_cwd(self, params):
+        """OSC 7: file://HOST/PATH working-directory report. Used for the tab; the
+        path is unquoted then stripped to safe, bounded text."""
+        url = params.decode('ascii', 'ignore')
+        if not url.startswith('file://'):
+            return
+        path = urllib.parse.unquote(url[7:].split('/', 1)[-1])
+        path = '/' + path if not path.startswith('/') else path
+        path = ''.join(ch for ch in path if 0x20 <= ord(ch) and ch != '\x7f')[:4096]
+        if path and path != self._reported_cwd:
+            self._reported_cwd = path
+            self.cwd_changed.emit(path)
+
+    def _osc_iterm2(self, params):
+        """OSC 1337: iTerm2 proprietary. File upload/download from untrusted output
+        is indefensible, so it is DECLINED even when enabled -- this handler makes
+        the escape recognized (not leaked) but performs no iTerm2 action."""
+        return
 
     def shutdown(self):
         """Detach the notifier, close the master fd and hang up the child. Used
