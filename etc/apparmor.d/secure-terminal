@@ -22,6 +22,9 @@ profile secure-terminal /usr/bin/secure-terminal {
   include <abstractions/X>
   include <abstractions/wayland>
   include <abstractions/mesa>
+  # audio: only for the opt-in audible bell with a custom sound file (QSoundEffect
+  # -> the audio server). The default bell is the X11 beep, which needs no audio.
+  include <abstractions/audio>
   include <abstractions/fonts>
   include <abstractions/freedesktop.org>
   include <abstractions/dbus-session-strict>
@@ -35,6 +38,11 @@ profile secure-terminal /usr/bin/secure-terminal {
   /usr/share/secure-terminal/{,**} r,
   /usr/share/applications/secure-terminal.desktop r,
   /usr/share/icons/{,**} r,
+  # bell sound files (audible channel, custom sound), read-only, from the allowed
+  # directories only -- matches BELL_SOUND_DIRS / sound_file_allowed(). The third,
+  # /usr/share/secure-terminal/sounds, is already covered above.
+  /usr/share/sounds/{,**} r,
+  owner @{HOME}/.local/share/sounds/{,**} r,
 
   # settings drop-ins (system + user) and per-tab session state
   /usr/lib/secure-terminal.d/{,**} r,

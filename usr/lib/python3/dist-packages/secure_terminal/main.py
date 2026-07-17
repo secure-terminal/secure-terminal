@@ -1255,17 +1255,24 @@ class MainWindow(QMainWindow):
             self._default_bell.add(channel)
         else:
             self._default_bell.discard(channel)
+        # toggle only THIS channel on the current tab, preserving its other
+        # channels (a restored tab may differ from the global default)
         term = self.current()
         if term is not None:
-            term.apply_bell(self._default_bell)
+            chans = term.bell_channels()
+            chans.add(channel) if enabled else chans.discard(channel)
+            term.apply_bell(chans)
         if channel in self._bell_actions:
             self._bell_actions[channel].setChecked(enabled)
         self._persist()
 
+    def _bell_sound_locked(self):
+        return 'bell' in self._locked or 'bell_sound' in self._locked
+
     def set_bell_sound(self, path):
         """Set the audible-channel sound file (accepted only inside an allowed
         directory), apply it to every tab, and persist."""
-        if 'bell' in self._locked:
+        if self._bell_sound_locked():
             return
         self._default_bell_sound = path if sound_file_allowed(path) else ''
         for i in range(self.tabs.count()):
@@ -1280,7 +1287,7 @@ class MainWindow(QMainWindow):
         return 'Sound file (beep)...'
 
     def _pick_bell_sound(self):
-        if 'bell' in self._locked:
+        if self._bell_sound_locked():
             return
         start = next((d for d in BELL_SOUND_DIRS if os.path.isdir(d)),
                      BELL_SOUND_DIRS[0])
@@ -1371,7 +1378,9 @@ class MainWindow(QMainWindow):
             ('osc_notice', [self.act_osc_notice]),
             ('tui', [self.act_tui]),
             ('allow_title', [self.act_title]),
-            ('bell', list(self._bell_actions.values()) + [self.act_bell_sound]),
+            ('bell', list(self._bell_actions.values())
+             + [self.act_bell_sound, self.act_bell_sound_clear]),
+            ('bell_sound', [self.act_bell_sound, self.act_bell_sound_clear]),
         ] + [(k, [self._osc_actions[k]]) for k in self._osc_actions]
         # a legacy allow_title lock also greys the granular title + notify controls
         if 'allow_title' in self._locked:
@@ -1665,6 +1674,11 @@ class MainWindow(QMainWindow):
             'profile stays enforceable. Clear it to use the plain system beep.')
         self.act_bell_sound.triggered.connect(self._pick_bell_sound)
         bell_menu.addAction(self.act_bell_sound)
+        self.act_bell_sound_clear = QAction('Use system beep (clear sound)', self)
+        self.act_bell_sound_clear.setToolTip(
+            'Clear the chosen sound file so the audible bell is the plain system beep.')
+        self.act_bell_sound_clear.triggered.connect(lambda: self.set_bell_sound(''))
+        bell_menu.addAction(self.act_bell_sound_clear)
 
         self.act_tui = QAction(_toggle_icon('utilities-terminal', 'T', '#e5a50a'),
                                '&TUI mode', self, checkable=True)

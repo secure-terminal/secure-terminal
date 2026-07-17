@@ -595,11 +595,18 @@ class SecureTerminal(QPlainTextEdit):
 
     @classmethod
     def _parse_bell(cls, spec):
-        """Normalise a bell spec (a comma-separated string, an iterable, or the
-        legacy 'off'/'audible'/'visual') to a set of valid channels."""
+        """Normalise a bell spec (a comma-separated string, an iterable of strings,
+        or the legacy 'off'/'audible'/'visual') to a set of valid channels. Any
+        malformed value -- e.g. a corrupt session field like 123 or [None] -- is
+        treated as no channels, never raises, so a bad session cannot block start."""
         if isinstance(spec, str):
-            spec = spec.split(',')
-        return {c.strip() for c in spec if c and c.strip() in cls.BELL_CHANNELS}
+            items = spec.split(',')
+        elif isinstance(spec, (list, tuple, set, frozenset)):
+            items = spec
+        else:
+            return set()
+        return {c.strip() for c in items
+                if isinstance(c, str) and c.strip() in cls.BELL_CHANNELS}
 
     def apply_bell(self, spec):
         """Set the enabled notification channels for this tab (see BELL_CHANNELS)."""
