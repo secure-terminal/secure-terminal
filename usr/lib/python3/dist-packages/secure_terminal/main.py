@@ -1677,19 +1677,57 @@ class MainWindow(QMainWindow):
         label = action.text().replace('&', '').replace('...', '').strip()
         self._shortcuts[ident] = (action, default, label)
 
+    def _is_reserved_shortcut(self, seq):
+        """A window shortcut must not shadow a key the terminal forwards to the
+        running program, or the dialog's promise (Ctrl+C/U/R reach the program) is
+        broken -- QAction shortcut processing would fire first. Reserved: a bare
+        Ctrl+<letter> (the tty/readline control keys) and a bare printable key
+        (which would eat ordinary typing). Ctrl+Shift/Ctrl+Alt combos and function
+        keys are fine."""
+        qks = QKeySequence(seq)
+        if qks.isEmpty():
+            return False
+        combo = qks[0]
+        mods = combo.keyboardModifiers()
+        key = combo.key()
+        ctrl = Qt.KeyboardModifier.ControlModifier
+        if mods == ctrl and Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+            return True
+        if mods == Qt.KeyboardModifier.NoModifier and 0x20 <= key <= 0x7E:
+            return True
+        return False
+
     def _set_shortcuts(self, mapping):
         """Apply a {ident: seq_string} mapping to the registered actions. Returns a
-        list of (seq, [idents]) conflicts (two actions bound to the same non-empty
-        combination); when non-empty NOTHING is applied. Otherwise applies, records
-        only the non-default overrides, and persists."""
+        list of human-readable PROBLEM strings (admin lock, a key reserved for the
+        terminal, or the same combination on two actions); when non-empty NOTHING is
+        applied. Otherwise applies, records only the non-default overrides, and
+        persists."""
+        if 'keybindings' in self._locked:
+            return ['Keyboard shortcuts are locked by the system administrator.']
+        problems = []
+        for ident, seq in mapping.items():
+            entry = self._shortcuts.get(ident)
+            default = entry[1] if entry else ''
+            norm = QKeySequence(seq).toString()
+            # a built-in default (e.g. quit = Ctrl+Q) is allowed to stand; only
+            # reject a user NEWLY assigning a key the terminal forwards
+            if (norm and norm != QKeySequence(default).toString()
+                    and self._is_reserved_shortcut(seq)):
+                label = entry[2] if entry else ident
+                problems.append('%s: %s is reserved for the terminal (always sent '
+                                'to the running program).' % (label, norm))
         seen = {}
         for ident, seq in mapping.items():
             norm = QKeySequence(seq).toString()   # canonicalise ("ctrl+t" -> "Ctrl+T")
             if norm:
                 seen.setdefault(norm, []).append(ident)
-        conflicts = [(seq, ids) for seq, ids in seen.items() if len(ids) > 1]
-        if conflicts:
-            return conflicts
+        for norm, ids in seen.items():
+            if len(ids) > 1:
+                problems.append('%s is assigned to more than one action: %s.'
+                                % (norm, ', '.join(self._shortcuts[i][2] for i in ids)))
+        if problems:
+            return problems
         for ident, seq in mapping.items():
             entry = self._shortcuts.get(ident)
             if entry is None:
@@ -1716,6 +1754,12 @@ class MainWindow(QMainWindow):
             'and are not remappable here.')
         intro.setWordWrap(True)
         layout.addWidget(intro)
+        locked = 'keybindings' in self._locked
+        if locked:
+            note = QLabel('These are locked by the system administrator and shown '
+                          'for reference only.')
+            note.setWordWrap(True)
+            layout.addWidget(note)
         grid = QGridLayout()
         edits = {}
         for row, ident in enumerate(sorted(self._shortcuts,
@@ -1723,6 +1767,11 @@ class MainWindow(QMainWindow):
             action, _default, label = self._shortcuts[ident]
             grid.addWidget(QLabel(label), row, 0)
             edit = QKeySequenceEdit(action.shortcut())
+            # one combination only: a multi-stroke sequence's toString() carries a
+            # space, which the space-separated `keybindings` config cannot round-trip
+            if hasattr(edit, 'setMaximumSequenceLength'):
+                edit.setMaximumSequenceLength(1)
+            edit.setEnabled(not locked)
             edits[ident] = edit
             grid.addWidget(edit, row, 1)
         layout.addLayout(grid)
@@ -1733,25 +1782,23 @@ class MainWindow(QMainWindow):
             for ident, edit in edits.items():
                 edit.setKeySequence(QKeySequence(self._shortcuts[ident][1]))
         reset.clicked.connect(_do_reset)
+        reset.setEnabled(not locked)
         buttons.addWidget(reset)
         buttons.addStretch(1)
-        cancel = QPushButton('Cancel')
+        cancel = QPushButton('Close' if locked else 'Cancel')
         cancel.clicked.connect(dialog.reject)
         buttons.addWidget(cancel)
         save = QPushButton('Save')
         save.setDefault(True)
+        save.setEnabled(not locked)
 
         def _do_save():
             mapping = {i: e.keySequence().toString() for i, e in edits.items()}
-            conflicts = self._set_shortcuts(mapping)
-            if conflicts:
-                lines = '\n'.join(
-                    '  %s : %s' % (seq, ', '.join(self._shortcuts[i][2] for i in ids))
-                    for seq, ids in conflicts)
+            problems = self._set_shortcuts(mapping)
+            if problems:
                 QMessageBox.warning(
-                    dialog, 'Shortcut conflict',
-                    'The same combination is assigned to more than one action; '
-                    'change one before saving:\n\n' + lines)
+                    dialog, 'Cannot save shortcuts',
+                    'Fix these before saving:\n\n  ' + '\n  '.join(problems))
                 return
             dialog.accept()
         save.clicked.connect(_do_save)
