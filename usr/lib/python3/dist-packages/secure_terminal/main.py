@@ -232,14 +232,24 @@ class MainWindow(QMainWindow):
             self._paste_delay = 3
         self._default_tui = cfg.get('tui') == 'true'
         self._default_allow_title = cfg.get('allow_title') == 'true'
-        # granular per-OSC-feature defaults (each off = neutralized). allow_title,
-        # if set, seeds title + notify for backward compatibility.
+        # granular per-OSC-feature defaults (each off = neutralized).
         self._osc_defaults = {}
         for _key, _lbl, _codes, _dflt, _risk, _hint in OSC_FEATURES:
             self._osc_defaults[_key] = cfg.get(_key) == 'true'
+        # legacy allow_title seeds title + notify ONLY as a migration fallback --
+        # when the granular key is absent. It must not clobber an explicit granular
+        # value (a user enabling osc_title but disabling osc_notify would otherwise
+        # find osc_notify forced back on every restart).
         if self._default_allow_title:
-            self._osc_defaults['osc_title'] = True
-            self._osc_defaults['osc_notify'] = True
+            if cfg.get('osc_title') is None:
+                self._osc_defaults['osc_title'] = True
+            if cfg.get('osc_notify') is None:
+                self._osc_defaults['osc_notify'] = True
+        # a locked legacy allow_title enforces BOTH granular title settings, in
+        # either direction (an admin can require or forbid the capability).
+        if 'allow_title' in self._locked:
+            self._osc_defaults['osc_title'] = self._default_allow_title
+            self._osc_defaults['osc_notify'] = self._default_allow_title
         # notice (a dismissible banner) when a program uses an OSC escape that line
         # mode strips; on by default, a global toggle turns it off
         self._osc_notice = cfg.get('osc_notice') != 'false'
@@ -674,7 +684,18 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             term.apply_scrollback(self._scrollback)
         term.apply_paste_delay(self._paste_delay)
-        term.apply_allow_title(bool(info.get('allow_title')))
+        # restore the full per-feature OSC map when present; fall back to the legacy
+        # allow_title boolean for sessions saved before the granular controls (which
+        # collapsed hyperlink/clipboard/colour/cwd/iTerm2 into title+notify).
+        osc_state = info.get('osc')
+        if isinstance(osc_state, dict):
+            for _f in OSC_FEATURES:
+                locked = _f[0] in self._locked or (
+                    _f[0] in ('osc_title', 'osc_notify') and 'allow_title' in self._locked)
+                term.apply_osc(_f[0], self._osc_defaults.get(_f[0], False) if locked
+                               else bool(osc_state.get(_f[0], False)))
+        else:
+            term.apply_allow_title(bool(info.get('allow_title')))
         # an admin-locked bell must win over whatever the saved session carried
         term.apply_bell(self._default_bell if 'bell' in self._locked
                         else info.get('bell', self._default_bell))
@@ -1195,6 +1216,10 @@ class MainWindow(QMainWindow):
         enabled feature dims it by its risk class)."""
         if key in self._locked:
             return                        # admin-locked; not user-changeable
+        # a legacy lock=allow_title locks the title + notify granular controls too,
+        # or the lock would be bypassable through the new per-feature menu.
+        if key in ('osc_title', 'osc_notify') and 'allow_title' in self._locked:
+            return
         term = self.current()
         if term is not None:
             term.apply_osc(key, enabled)
@@ -1275,6 +1300,10 @@ class MainWindow(QMainWindow):
             ('allow_title', [self.act_title]),
             ('bell', list(self._bell_actions.values())),
         ] + [(k, [self._osc_actions[k]]) for k in self._osc_actions]
+        # a legacy allow_title lock also greys the granular title + notify controls
+        if 'allow_title' in self._locked:
+            gated += [('allow_title', [self._osc_actions[k]])
+                      for k in ('osc_title', 'osc_notify') if k in self._osc_actions]
         for key, actions in gated:
             if key in self._locked:
                 for act in actions:
@@ -2205,6 +2234,7 @@ class MainWindow(QMainWindow):
                 'markings': term.markings_enabled(),
                 'tui': term.current_tui(),
                 'allow_title': term.allow_title_enabled(),
+                'osc': {_f[0]: term.osc_enabled(_f[0]) for _f in OSC_FEATURES},
                 'bell': term.bell_mode(),
                 'scrollback': term.current_scrollback(),
                 'text': text,

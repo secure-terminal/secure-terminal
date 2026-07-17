@@ -119,11 +119,15 @@ _RISK_LABELS = {
 # the codes for enabled OSC features and ignores the rest (still stripped).
 _OSC_ANY = re.compile(rb'\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)')
 _OSC_CLIP_MAX = 64 * 1024        # cap a clipboard payload; no unbounded writes
+# A trailing, still-unterminated OSC at the end of a read chunk: held back and
+# prepended to the next chunk so a sequence split across PTY reads (a full-size
+# OSC 52 clipboard payload is guaranteed to span the 64 KiB read) is not missed.
+_OSC_TAIL = re.compile(rb'\x1b\][^\x07\x1b]*\Z')
 # OSC 8 hyperlink: ESC ] 8 ; <params> ; <URI> BEL <text> ESC ] 8 ; ; BEL. Captures
 # the real target URI and the visible text, so the true destination can be shown
 # (the display text can differ from the target -- the phishing risk).
-_OSC8 = re.compile(rb'\x1b\]8;[^;\x07\x1b]*;([^\x07\x1b]*)\x07(.*?)\x1b\]8;;\x07',
-                   re.DOTALL)
+_OSC8 = re.compile(rb'\x1b\]8;[^;\x07\x1b]*;([^\x07\x1b]*)(?:\x07|\x1b\\)'
+                   rb'(.*?)\x1b\]8;;(?:\x07|\x1b\\)', re.DOTALL)
 # OSC numeric code -> feature key, so a CLI-mode notice can name the exact type.
 _OSC_CODE_KEY = {}
 for _k, _lbl, _codes, *_rest in OSC_FEATURES:
@@ -240,6 +244,10 @@ class SecureTerminal(QPlainTextEdit):
         # cannot grow it without limit; the oldest output is dropped first.
         self._raw = ''
         self._RAW_MAX = 1_000_000
+        # cap alternate-screen enter/leave snapshots per read (anti-DoS: a flood of
+        # alternating ?1049h/?1049l would otherwise deepcopy the screen thousands of
+        # times); a real full-screen program toggles it at most a handful of times.
+        self._ALT_TRANSITIONS_MAX = 200
         # A mode toggle only re-renders this much of the most-recent raw output,
         # not the whole buffer: rendering the full scrollback (and reveal expands
         # each byte to an 8-char <U+XXXX>) froze the UI on a flood. This tail is
@@ -341,6 +349,11 @@ class SecureTerminal(QPlainTextEdit):
         # cap, this holds its introducer byte and the feed discards bytes until the
         # terminator, so a huge chunk-split escape is stripped in O(1) memory.
         self._esc_drop = ''
+        # TUI OSC action path: bytes of an incomplete trailing OSC held from the
+        # previous read, so an enabled OSC (clipboard/notify/...) split across PTY
+        # reads is still acted on. Bounded a little above the clipboard cap.
+        self._osc_carry = b''
+        self._OSC_CARRY_MAX = _OSC_CLIP_MAX + 4096
         # emitted whenever a program uses an OSC escape while in pure CLI mode,
         # where it is stripped; the window de-duplicates to a once-per-tab notice
         # (it knows the setting, so the terminal must not consume the state itself).
@@ -360,7 +373,10 @@ class SecureTerminal(QPlainTextEdit):
         # the fresh shell (line mode; a TUI tab repaints over it on first draw).
         if history:
             restored = history if history.endswith('\n') else history + '\n'
-            self._raw = restored          # so a mode toggle re-renders it too
+            # bound the retained raw as for live output, so entering TUI does not
+            # replay a huge restored scrollback (up to the 100k-line setting)
+            # synchronously through pyte on the first switch.
+            self._raw = restored[-self._RAW_MAX:]   # so a mode toggle re-renders it too
             self._append(restored)
 
         self._notifier = None
@@ -469,6 +485,7 @@ class SecureTerminal(QPlainTextEdit):
         # or discard would corrupt the first bytes rendered after switching back.
         self._esc_carry = ''
         self._esc_drop = ''
+        self._osc_carry = b''
         self._sync_display()
 
     def _grid_mode(self):
@@ -1083,6 +1100,7 @@ class SecureTerminal(QPlainTextEdit):
         if self._stream is None:
             return
         pos, n = 0, len(data)
+        transitions = 0
         while pos < n:
             nxt, kind, mlen = n, None, 0
             for marker in _ALT_ENTER_BYTES:
@@ -1093,11 +1111,21 @@ class SecureTerminal(QPlainTextEdit):
                 i = data.find(marker, pos)
                 if 0 <= i < nxt:
                     nxt, kind, mlen = i, 'leave', len(marker)
+            # Each enter/leave snapshots or clears the whole screen (pyte has no alt
+            # buffer). A process flooding alternating ?1049h/?1049l in one read could
+            # otherwise force thousands of full-screen deepcopies and freeze the GUI,
+            # so bound the snapshot/restore work per read: past the cap, feed the
+            # remainder as ordinary bytes (a real program redraws its own frame).
+            if transitions >= self._ALT_TRANSITIONS_MAX:
+                self._feed_bytes(data[pos:])
+                break
             self._feed_bytes(data[pos:nxt + mlen])   # up to and incl. the marker
             if kind == 'enter':
                 self._alt_enter()
+                transitions += 1
             elif kind == 'leave':
                 self._alt_leave()
+                transitions += 1
             pos = nxt + mlen if kind else n
 
     def _feed_bytes(self, chunk):
@@ -1140,6 +1168,16 @@ class SecureTerminal(QPlainTextEdit):
         title/notification/path can never carry an escape, control or homoglyph.
         Only ever called in TUI mode. Palette (OSC 4/10/11/12) and hyperlinks
         (OSC 8) are display-affecting and handled in the render path, not here."""
+        # Rejoin an OSC split across PTY reads, and hold back a new incomplete tail,
+        # so a sequence spanning two reads (a full-size clipboard payload always
+        # does) is acted on rather than silently dropped. Bounded: an unterminated
+        # flood past the cap is let go rather than buffered forever.
+        data = self._osc_carry + data
+        self._osc_carry = b''
+        tail = _OSC_TAIL.search(data)
+        if tail and (len(data) - tail.start()) <= self._OSC_CARRY_MAX:
+            self._osc_carry = data[tail.start():]
+            data = data[:tail.start()]
         if self._osc['osc_title']:
             title = sanitize_title(getattr(self._screen, 'title', ''))
             if title and title != self._last_title:
@@ -1238,7 +1276,10 @@ class SecureTerminal(QPlainTextEdit):
             return
         path = urllib.parse.unquote(url[7:].split('/', 1)[-1])
         path = '/' + path if not path.startswith('/') else path
-        path = ''.join(ch for ch in path if 0x20 <= ord(ch) and ch != '\x7f')[:4096]
+        # percent-decoding can reintroduce control/bidi/zero-width characters, so
+        # run the decoded path through the same safe-ASCII sanitizer as titles
+        # before it is shown as a tooltip (no control, no homoglyph, no bidi).
+        path = sanitize_title(path)[:4096]
         if path and path != self._reported_cwd:
             self._reported_cwd = path
             self.cwd_changed.emit(path)
