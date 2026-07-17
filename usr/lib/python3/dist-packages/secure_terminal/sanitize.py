@@ -90,7 +90,8 @@ def _detail_badge(cp):
         name = 'UNNAMED'
     return '<U+%04X %s>' % (cp, name)
 
-# CSI (ESC [ ...), OSC (ESC ] ... BEL/ST) and other two-byte escapes.
+# CSI (ESC [ ...), OSC (ESC ] ... BEL/ST), the DCS/SOS/PM/APC string sequences
+# (ESC P/X/^/_ ... ST) and other two-byte escapes.
 ANSI_RE = re.compile(
     # CSI: ESC [ , parameter bytes 0x30-0x3F (0-9 : ; < = > ?), intermediate
     # bytes 0x20-0x2F, a final byte 0x40-0x7E. The parameter class must span the
@@ -98,6 +99,11 @@ ANSI_RE = re.compile(
     # emits (e.g. modifyOtherKeys "\x1b[>4;2m", "\x1b[?25l") is left unstripped.
     r'\x1b\[[0-?]*[ -/]*[@-~]'
     r'|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?'
+    # DCS (ESC P), SOS (ESC X), PM (ESC ^), APC (ESC _): a string sequence whose
+    # BODY runs to a BEL or ST terminator. Consume the whole body -- matching only
+    # the two-byte opener (the generic arm below) would leak the body as text, so a
+    # cat'd DECRQSS/XTGETTCAP/APC payload ("\x1bP$qm\x1b\\") would show "$qm".
+    r'|\x1b[PX^_][^\x07\x1b]*(?:\x07|\x1b\\)?'
     r'|\x1b[@-Z\\-_]'
 )
 
@@ -114,10 +120,19 @@ SGR_RE = re.compile(r'\x1b\[([0-9;]*)m')
 _TRAILING_ESCAPE = re.compile(
     r'\x1b(?:'
     r'\][^\x07\x1b]*'        # OSC: ESC ] ... still awaiting its BEL or ST
+    r'|[PX^_][^\x07\x1b]*'   # DCS/SOS/PM/APC: ESC P/X/^/_ ... awaiting BEL or ST
     r'|\[[0-?]*[ -/]*'       # CSI: ESC [ params/intermediates, no final byte yet
     r'|[ -/]*'               # ESC + intermediate bytes, awaiting a final (charsets)
     r')?$'
 )
+
+
+def has_bell(text):
+    """True if `text` contains a standalone BEL (0x07) -- a program ringing the
+    bell -- as opposed to a BEL that merely terminates an OSC sequence (a shell
+    ends a title with one). ANSI_RE removes the OSC/escape matches, so only a
+    standalone BEL survives."""
+    return '\x07' in ANSI_RE.sub('', text)
 
 
 def split_trailing_escape(text, cap=4096):

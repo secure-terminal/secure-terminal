@@ -1090,8 +1090,10 @@ class MainWindow(QMainWindow):
                     'Turn TUI mode off to return to the safe CLI mode.')
         return ('#1f8a54', 'CLI',
                 'Mode: CLI (green, the safe default).\n\n'
-                'No escape parser (TERM=dumb): every escape sequence in program '
-                'output is removed -- in every unicode display mode. So merely '
+                'No escape parser: every escape sequence in program output is '
+                'removed in the renderer, in every unicode display mode, '
+                'regardless of TERM (which stays a normal xterm-256color so the '
+                'opt-in TUI mode can run full-screen programs). So merely '
                 'viewing a file or log (the "cat a crafted file and it runs a '
                 'command" risk) cannot execute anything here, whatever the '
                 'unicode setting.\n\n'
