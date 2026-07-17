@@ -675,7 +675,9 @@ class MainWindow(QMainWindow):
             term.apply_scrollback(self._scrollback)
         term.apply_paste_delay(self._paste_delay)
         term.apply_allow_title(bool(info.get('allow_title')))
-        term.apply_bell(info.get('bell', self._default_bell))
+        # an admin-locked bell must win over whatever the saved session carried
+        term.apply_bell(self._default_bell if 'bell' in self._locked
+                        else info.get('bell', self._default_bell))
         index = self._add_tab(term)
         name = info.get('name')
         if isinstance(name, str) and name:
@@ -1969,7 +1971,6 @@ class MainWindow(QMainWindow):
                                      or self._osc_defaults.get('osc_notify'))
         self._scrollback = opts['scrollback']
         self._paste_delay = opts['paste_delay']
-        self._default_bell = opts.get('bell', self._default_bell)
         for index in range(self.tabs.count()):
             term = self.tabs.widget(index)
             term.apply_theme(opts['theme'])
@@ -1980,7 +1981,9 @@ class MainWindow(QMainWindow):
                 term.apply_osc(key, value)
             term.apply_scrollback(opts['scrollback'])
             term.apply_paste_delay(opts['paste_delay'])
-            term.apply_bell(self._default_bell)
+            # NB: bell is intentionally NOT applied here. This global-settings
+            # dialog has no bell field, so touching it would silently reset each
+            # tab's per-tab bell choice; the bell is managed via the View menu only.
         self.set_persist_session(opts['persist'])
         self._sync_chrome_to_tab()
         self._persist()

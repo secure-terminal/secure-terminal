@@ -307,6 +307,7 @@ class SecureTerminal(QPlainTextEdit):
         # so a program spamming BEL cannot machine-gun it.
         self._bell = 'off'
         self._last_bell = 0.0
+        self._seeding = False         # True while replaying _raw into pyte (no bell)
         self._last_title = ''
         self._reported_cwd = ''       # OSC 7 working directory, when osc_cwd is on
         # OSC 4/10/11/12 palette overrides (when osc_colors is on): 'fg'/'bg'/
@@ -464,6 +465,10 @@ class SecureTerminal(QPlainTextEdit):
         if enabled == self._tui:
             return
         self._tui = enabled
+        # switching modes abandons any half-parsed CLI escape state; a stale carry
+        # or discard would corrupt the first bytes rendered after switching back.
+        self._esc_carry = ''
+        self._esc_drop = ''
         self._sync_display()
 
     def _grid_mode(self):
@@ -508,7 +513,11 @@ class SecureTerminal(QPlainTextEdit):
         by _raw's own cap; feeding is contained like the live stream."""
         if self._screen is None or not self._raw:
             return
-        self._feed_stream(self._raw.encode('utf-8', 'replace'))
+        self._seeding = True          # replayed bells already happened; do not ring
+        try:
+            self._feed_stream(self._raw.encode('utf-8', 'replace'))
+        finally:
+            self._seeding = False
 
     def current_tui(self):
         return self._tui
@@ -628,8 +637,18 @@ class SecureTerminal(QPlainTextEdit):
         self._screen = pyte.HistoryScreen(cols, rows,
                                           history=self._history_size(), ratio=0.5)
         self._stream = pyte.ByteStream(self._screen)
+        # Route pyte's BEL to the tab's bell policy. pyte tracks OSC state across
+        # feeds, so a BEL that merely terminates a (possibly split) OSC title is
+        # consumed as the terminator and never reaches here -- only a real bell does.
+        self._screen.bell = self._pyte_bell
         self._set_winsize(cols, rows)
         self._reset_grid_view()
+
+    def _pyte_bell(self):
+        """pyte dispatched a BEL in TUI mode. Ring per policy, unless we are
+        replaying retained output to seed the grid (those bells already happened)."""
+        if not self._seeding:
+            self._ring()
 
     def _reset_grid_view(self):
         """Start the grid view from a clean document: the next render rebuilds the
@@ -963,11 +982,11 @@ class SecureTerminal(QPlainTextEdit):
             self.shell_exited.emit()
             return
         text = self._decoder.decode(data)
-        # Ring the bell for a standalone BEL in the output (not an OSC terminator),
-        # if the tab opted in. Works in both modes; the BEL itself is still
-        # neutralized in the display -- ringing is the only added effect.
-        if self._bell != 'off' and has_bell(text):
-            self._ring()
+        # The bell is rung where each mode consumes the stream, NOT here: in TUI via
+        # pyte's BEL dispatch (_pyte_bell), in CLI on the carry-aware renderable text
+        # (below). Ringing on the raw chunk would false-fire whenever a shell's OSC
+        # title -- BEL-terminated -- split across a read, seeing the terminator as a
+        # standalone bell.
         # Track whether a full-screen program holds the alternate screen. While it
         # does, keep the pyte screen fed even in line mode, so flipping to TUI mode
         # shows its current frame at once (no restart, the program keeps running).
@@ -1019,8 +1038,15 @@ class SecureTerminal(QPlainTextEdit):
         # usual victim) is never leaked as literal text. An over-long string
         # sequence (a Sixel image is the worst case) switches to a discard state so
         # it is stripped whatever its length, without buffering it unbounded.
+        drop_before = self._esc_drop
         text, self._esc_carry, self._esc_drop = feed_chunk_carry(
             text, self._esc_carry, self._esc_drop)
+        # Ring on a standalone BEL (a real bell) in the carry-reassembled text.
+        # feed_chunk_carry has rejoined a split sequence, so has_bell() -- which
+        # strips complete OSC/DCS sequences before looking for a BEL -- never
+        # false-fires on a shell's BEL-terminated title, split across reads or not.
+        if self._bell != 'off' and has_bell(text):
+            self._ring()
         # An OSC (ESC ]) is stripped in CLI mode; flag each distinct TYPE seen so
         # the window can notice it at most once per tab (not once per any OSC).
         if '\x1b]' in text:
@@ -1030,6 +1056,11 @@ class SecureTerminal(QPlainTextEdit):
                 if key not in emitted:
                     emitted.add(key)
                     self.osc_used.emit(key)
+        # An over-cap OSC that just switched to the discard state had its introducer
+        # truncated away before the scan above, so still surface the attempt (as a
+        # generic OSC) -- else padding an OSC past the cap would evade the notice.
+        if self._esc_drop == ']' and drop_before != ']':
+            self.osc_used.emit('osc_other')
         self._raw += text
         if len(self._raw) > self._RAW_MAX:
             self._raw = self._raw[-self._RAW_MAX:]     # drop the oldest output
