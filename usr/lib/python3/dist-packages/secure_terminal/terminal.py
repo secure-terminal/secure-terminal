@@ -119,10 +119,11 @@ _RISK_LABELS = {
 # the codes for enabled OSC features and ignores the rest (still stripped).
 _OSC_ANY = re.compile(rb'\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)')
 _OSC_CLIP_MAX = 64 * 1024        # cap a clipboard payload; no unbounded writes
-# A trailing, still-unterminated OSC at the end of a read chunk: held back and
-# prepended to the next chunk so a sequence split across PTY reads (a full-size
-# OSC 52 clipboard payload is guaranteed to span the 64 KiB read) is not missed.
-_OSC_TAIL = re.compile(rb'\x1b\][^\x07\x1b]*\Z')
+# Whether an OSC body (the bytes after its "\x1b]") contains a terminator (BEL or
+# ST). Used to decide if a trailing OSC introducer is incomplete and must be held
+# back and prepended to the next read, so a sequence split across PTY reads (a
+# full-size OSC 52 clipboard payload always spans the 64 KiB read) is not missed.
+_OSC_TERMINATED = re.compile(rb'\x07|\x1b\\')
 # OSC 8 hyperlink: ESC ] 8 ; <params> ; <URI> BEL <text> ESC ] 8 ; ; BEL. Captures
 # the real target URI and the visible text, so the true destination can be shown
 # (the display text can differ from the target -- the phishing risk).
@@ -1170,14 +1171,21 @@ class SecureTerminal(QPlainTextEdit):
         (OSC 8) are display-affecting and handled in the render path, not here."""
         # Rejoin an OSC split across PTY reads, and hold back a new incomplete tail,
         # so a sequence spanning two reads (a full-size clipboard payload always
-        # does) is acted on rather than silently dropped. Bounded: an unterminated
-        # flood past the cap is let go rather than buffered forever.
+        # does) is acted on rather than silently dropped. The tail to carry is the
+        # earliest of: the last UNTERMINATED "\x1b]" introducer, or a trailing lone
+        # "\x1b" (which may begin an introducer in the next read). Bounded: an
+        # unterminated flood past the cap is let go rather than buffered forever.
         data = self._osc_carry + data
         self._osc_carry = b''
-        tail = _OSC_TAIL.search(data)
-        if tail and (len(data) - tail.start()) <= self._OSC_CARRY_MAX:
-            self._osc_carry = data[tail.start():]
-            data = data[:tail.start()]
+        carry_at = len(data) if data.endswith(b'\x1b') else -1
+        intro = data.rfind(b'\x1b]')
+        if intro != -1 and not _OSC_TERMINATED.search(data[intro + 2:]):
+            carry_at = intro
+        if carry_at == len(data):
+            carry_at = len(data) - 1          # the trailing lone ESC
+        if carry_at >= 0 and (len(data) - carry_at) <= self._OSC_CARRY_MAX:
+            self._osc_carry = data[carry_at:]
+            data = data[:carry_at]
         if self._osc['osc_title']:
             title = sanitize_title(getattr(self._screen, 'title', ''))
             if title and title != self._last_title:
