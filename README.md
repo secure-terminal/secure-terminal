@@ -98,9 +98,9 @@ The safety model above does not cost you the usual conveniences:
 The strict line mode above cannot run curses apps, because they are driven
 entirely by the escape sequences it refuses to parse. **TUI mode** (top bar and
 **View -> TUI mode**, per tab, default off, needs `python3-pyte`) relaxes that so
-you can run `ssh`, an editor, or the Claude Code CLI. A yellow indicator and a
-hover tooltip flag it while it is active, because it is a deliberate,
-lower-guarantee mode:
+you can run `ssh`, an editor, `htop`, the Claude Code CLI, and use the shell's own
+completion menus and progress displays. A yellow indicator and a hover tooltip
+flag it while it is active, because it is a deliberate, lower-guarantee mode:
 
 - Escapes are interpreted, but inside an isolated in-memory screen model (`pyte`)
   that has no OS reach: it **cannot set the window title or touch the system
@@ -110,10 +110,27 @@ lower-guarantee mode:
   homoglyph character into what you read.
 - Colours use the same contrast guard, so nothing can be painted invisibly.
 
-What you give up: a program can draw a *misleading interface* within its own
-screen (a fake prompt, say), so only run programs you trust. This is
-"restricted-emulator safe," not "safe by construction." The default line mode,
-and everything the project's guarantees rest on, is unchanged.
+TUI mode renders through the confined screen model at all times (with its own
+scrollback), so a program that positions the cursor renders faithfully: a
+completion menu, a progress bar, or a full-screen program on the alternate screen
+(which is snapshotted and restored so it never disturbs your scrollback).
+
+What you give up: because the cursor can be positioned, a program can draw a
+*misleading interface* (a fake prompt, say) or overwrite a line you already read,
+so only run programs you trust. This is "restricted-emulator safe," not "safe by
+construction."
+
+**Security comparison with the default mode.** The line (CLI) mode, and
+everything the project's guarantees rest on, is **unchanged**: it never interprets
+an escape, the confined screen model is **never fed** in CLI mode, and output is
+append-only, so a program can never reach back and rewrite a line you have already
+seen (transcript integrity). TUI mode is the one place escapes are interpreted;
+the only change from earlier versions is that it now does so **uniformly** (at a
+shell prompt too, not only while a full-screen program holds the alternate
+screen). No new class of side-effect is enabled -- title, clipboard (OSC 52) and
+hyperlink escapes remain neutralized in both modes -- and every on-screen cell is
+still filtered. The extension is contained entirely within the opt-in, clearly
+indicated TUI mode.
 
 ## What it does not do (on purpose)
 
@@ -122,10 +139,11 @@ and everything the project's guarantees rest on, is unchanged.
 - **No terminal side-effects.** No window-title control, no clipboard escape
   (OSC 52), no hyperlink escapes, in either mode.
 
-This is a deliberately minimal, line-oriented first version. Backspace works, but
-because the display neutralizes the escapes readline uses to redraw, richer
-in-line editing (mid-line cursor movement, history recall) is intentionally
-basic; compose or paste a line, read the exact bytes, then run it.
+The default is a deliberately minimal, line-oriented display. Backspace works, but
+because line mode neutralizes the escapes readline uses to redraw, richer in-line
+editing (mid-line cursor movement, history recall, completion menus) is
+intentionally basic there; compose or paste a line, read the exact bytes, then run
+it. Turn on TUI mode when you want those interactive features to render.
 
 ## Run
 
