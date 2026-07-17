@@ -190,6 +190,10 @@ class SecureTerminal(QPlainTextEdit):
         super().__init__(parent)
         self.setUndoRedoEnabled(False)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        # A terminal never scrolls sideways: line mode wraps at the widget width and
+        # the TUI grid is sized to fit, so a horizontal scrollbar is always wrong
+        # (it only appeared from a rounding overflow and clipped the right edge).
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setFrameStyle(0)
 
         self._base_point_size = BASE_POINT_SIZE
@@ -456,6 +460,15 @@ class SecureTerminal(QPlainTextEdit):
     def tui_active(self):
         return getattr(self, '_tui', False) and tui_available()
 
+    def _text_area(self):
+        """The viewport size MINUS the document margins, i.e. the pixels actually
+        available for text. Dividing the raw viewport width instead gave the grid
+        one column too many -- it overflowed by the margin and showed a useless
+        horizontal scrollbar (and nano-style apps drew past the right edge)."""
+        margin = int(self.document().documentMargin())
+        vp = self.viewport()
+        return (max(1, vp.width() - 2 * margin), max(1, vp.height() - 2 * margin))
+
     def _grid_size(self):
         """Columns and rows that fit the viewport at the current font. Used for
         the LINE-mode winsize, so it tracks the actual text width (scrollbar
@@ -463,9 +476,9 @@ class SecureTerminal(QPlainTextEdit):
         metrics = self.fontMetrics()
         char_w = metrics.horizontalAdvance('M') or 1
         char_h = metrics.height() or 1
-        vp = self.viewport()
-        cols = max(2, vp.width() // char_w)
-        rows = max(2, vp.height() // char_h)
+        width, height = self._text_area()
+        cols = max(2, width // char_w)
+        rows = max(2, height // char_h)
         return cols, rows
 
     def _tui_grid_size(self):
@@ -478,13 +491,12 @@ class SecureTerminal(QPlainTextEdit):
         metrics = self.fontMetrics()
         char_w = metrics.horizontalAdvance('M') or 1
         char_h = metrics.height() or 1
-        vp = self.viewport()
-        width = vp.width()
+        width, height = self._text_area()
         bar = self.verticalScrollBar()
         if bar is not None and bar.isVisible():
             width += bar.width()          # reclaim the space TUI mode will not use
         cols = max(2, width // char_w)
-        rows = max(2, vp.height() // char_h)
+        rows = max(2, height // char_h)
         return cols, rows
 
     def _set_winsize(self, cols, rows):

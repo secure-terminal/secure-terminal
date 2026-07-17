@@ -889,6 +889,11 @@ class MainWindow(QMainWindow):
         if term is not None:
             term.apply_tui(enabled)
             if enabled:
+                # Turning TUI on answers a "this program needs a full-screen
+                # interface -- turn on TUI mode" advisory, so that hint is no longer
+                # valid: clear this tab's banner.
+                self._advisories.pop(term, None)
+                self._refresh_banner()
                 # Any non-'show' mode makes a TUI unreadable (box-drawing becomes
                 # '_' in strip, or a badge in reveal/detail that breaks the grid),
                 # so lean this TAB to 'show'. Do it on the term only -- NOT via
