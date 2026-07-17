@@ -1665,9 +1665,16 @@ class MainWindow(QMainWindow):
         tui.setEnabled(tui_available())
         form.addRow('TUI mode (new tabs)', tui)
 
-        title = QCheckBox()
-        title.setChecked(self._default_allow_title)
-        form.addRow('Allow program title / notifications', title)
+        # granular OSC feature toggles: each off by default, its risk in the label
+        # and its layman attack-surface hint as the tooltip.
+        osc_checks = {}
+        _risk_tag = {'low': '', 'medium': '  [medium risk]', 'high': '  [HIGH risk]'}
+        for _key, _label, _codes, _dflt, _risk, _hint in OSC_FEATURES:
+            _cb = QCheckBox()
+            _cb.setChecked(self._osc_defaults.get(_key, False))
+            _cb.setToolTip(_hint)
+            form.addRow('OSC ' + _label + _risk_tag[_risk], _cb)
+            osc_checks[_key] = _cb
 
         osc = QCheckBox()
         osc.setChecked(self._osc_notice)
@@ -1705,7 +1712,8 @@ class MainWindow(QMainWindow):
         self._apply_global({
             'theme': theme.currentData(), 'zoom': zoom.value(),
             'mode': mode.currentData(), 'colors': colors.isChecked(),
-            'tui': tui.isChecked(), 'allow_title': title.isChecked(),
+            'tui': tui.isChecked(),
+            'osc': {k: cb.isChecked() for k, cb in osc_checks.items()},
             'osc_notice': osc.isChecked(),
             'scrollback': scrollback.currentData(), 'paste_delay': pdelay.currentData(),
             'persist': persist.isChecked(),
@@ -1721,10 +1729,14 @@ class MainWindow(QMainWindow):
                 ('unicode_mode', 'mode', self._default_mode),
                 ('colors', 'colors', self._default_colors),
                 ('tui', 'tui', self._default_tui),
-                ('allow_title', 'allow_title', self._default_allow_title),
                 ('osc_notice', 'osc_notice', self._osc_notice)):
             if key in self._locked:
                 opts[field] = current
+        # granular OSC defaults: a locked feature keeps its current value.
+        osc = dict(opts.get('osc', {}))
+        for key in osc:
+            if key in self._locked:
+                osc[key] = self._osc_defaults.get(key, False)
         if 'osc_notice' in opts:
             self._osc_notice = opts['osc_notice']
             self.act_osc_notice.setChecked(self._osc_notice)
@@ -1733,7 +1745,12 @@ class MainWindow(QMainWindow):
         self._default_mode = opts['mode']
         self._default_colors = opts['colors']
         self._default_tui = opts['tui']
-        self._default_allow_title = opts['allow_title']
+        for key, value in osc.items():
+            self._osc_defaults[key] = value
+            if key in self._osc_actions:
+                self._osc_actions[key].setChecked(value)
+        self._default_allow_title = (self._osc_defaults.get('osc_title')
+                                     or self._osc_defaults.get('osc_notify'))
         self._scrollback = opts['scrollback']
         self._paste_delay = opts['paste_delay']
         for index in range(self.tabs.count()):
@@ -1742,7 +1759,8 @@ class MainWindow(QMainWindow):
             term.apply_zoom(opts['zoom'])
             term.apply_mode(opts['mode'])
             term.apply_colors(opts['colors'])
-            term.apply_allow_title(opts['allow_title'])
+            for key, value in osc.items():
+                term.apply_osc(key, value)
             term.apply_scrollback(opts['scrollback'])
             term.apply_paste_delay(opts['paste_delay'])
         self.set_persist_session(opts['persist'])
