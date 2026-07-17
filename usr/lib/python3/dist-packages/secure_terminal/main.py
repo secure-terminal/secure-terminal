@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 
 from PyQt6.QtNetwork import QLocalServer
 from secure_terminal import settings, session, ipc
-from secure_terminal.sanitize import sanitize_paste
+from secure_terminal.sanitize import sanitize_paste, OSC_FEATURES, OSC_FEATURE_BY_KEY
 from secure_terminal.terminal import (
     SecureTerminal, THEMES, DISPLAY_MODES, tui_available,
 )
@@ -219,6 +219,14 @@ class MainWindow(QMainWindow):
             self._paste_delay = 3
         self._default_tui = cfg.get('tui') == 'true'
         self._default_allow_title = cfg.get('allow_title') == 'true'
+        # granular per-OSC-feature defaults (each off = neutralized). allow_title,
+        # if set, seeds title + notify for backward compatibility.
+        self._osc_defaults = {}
+        for _key, _lbl, _codes, _dflt, _risk, _hint in OSC_FEATURES:
+            self._osc_defaults[_key] = cfg.get(_key) == 'true'
+        if self._default_allow_title:
+            self._osc_defaults['osc_title'] = True
+            self._osc_defaults['osc_notify'] = True
         # notice (a dismissible banner) when a program uses an OSC escape that line
         # mode strips; on by default, a global toggle turns it off
         self._osc_notice = cfg.get('osc_notice') != 'false'
@@ -260,6 +268,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self._theme_actions = {}
+        self._osc_actions = {}       # osc feature key -> its checkable menu action
         self._user_titles = {}       # term -> user-set tab name
         self._prog_titles = {}       # term -> program (OSC) title
         self._pre_tui_mode = {}      # term -> display mode to restore after TUI
@@ -311,6 +320,7 @@ class MainWindow(QMainWindow):
         term.title_changed.connect(
             lambda title, t=term: self._on_tab_title(t, title))
         term.notified.connect(self._on_notify)
+        term.cwd_changed.connect(lambda path, t=term: self._on_cwd_changed(t, path))
         term.advise_signal.connect(lambda msg, t=term: self._on_advise(t, msg))
         term.osc_used.connect(lambda t=term: self._on_osc_used(t))
         index = self.tabs.addTab(term, term.cwd_basename() or 'shell')
@@ -437,7 +447,7 @@ class MainWindow(QMainWindow):
         term.apply_markings(self._default_markings)
         term.apply_scrollback(self._scrollback)
         term.apply_paste_delay(self._paste_delay)
-        term.apply_allow_title(self._default_allow_title)
+        self._apply_osc_defaults(term)
         self._add_tab(term)
 
     def _open_launch_tab(self, spec):
@@ -457,7 +467,7 @@ class MainWindow(QMainWindow):
         term.apply_markings(self._default_markings)
         term.apply_scrollback(self._scrollback)
         term.apply_paste_delay(self._paste_delay)
-        term.apply_allow_title(self._default_allow_title)
+        self._apply_osc_defaults(term)
         self._add_tab(term)
         if spec.get('title'):
             self._user_titles[term] = spec['title']
@@ -785,11 +795,13 @@ class MainWindow(QMainWindow):
         # set_colors/set_tui/set_title and rewrite the persisted defaults on every
         # tab switch (and set_tui would even force the tab's mode). Block signals
         # so a tab switch only DISPLAYS state, never mutates it.
-        for action, value in (
-                (self.act_colors, term.colors_enabled()),
-                (self.act_markings, term.markings_enabled()),
-                (self.act_tui, term.current_tui()),
-                (self.act_title, term.allow_title_enabled())):
+        _sync = [
+            (self.act_colors, term.colors_enabled()),
+            (self.act_markings, term.markings_enabled()),
+            (self.act_tui, term.current_tui()),
+            (self.act_title, term.allow_title_enabled()),
+        ] + [(self._osc_actions[k], term.osc_enabled(k)) for k in self._osc_actions]
+        for action, value in _sync:
             action.blockSignals(True)
             action.setChecked(value)
             action.blockSignals(False)
@@ -939,16 +951,46 @@ class MainWindow(QMainWindow):
         active = term is not None and term.tui_active()
         self.tui_dot_action.setVisible(active)
 
-    # -- security indicator: two lamps, one per independent risk axis ---------
+    # -- security indicator: three lamps, one per independent risk axis -------
     def _build_security_indicator(self):
         self.sec_display = QPushButton(self)
         self.sec_mode = QPushButton(self)
-        for lamp in (self.sec_display, self.sec_mode):
+        self.sec_osc = QPushButton(self)
+        for lamp in (self.sec_display, self.sec_mode, self.sec_osc):
             lamp.setFlat(True)
             lamp.setCursor(Qt.CursorShape.PointingHandCursor)
             lamp.clicked.connect(self._show_security_details)
             self.statusBar().addPermanentWidget(lamp)
         self._update_security_indicator()
+
+    def _osc_level(self):
+        """The OSC risk axis as (colour, short, detail): green when every OSC
+        feature is neutralized (the default); yellow when a low/medium one is
+        enabled; red when a high-risk one (clipboard, iTerm2) is enabled."""
+        term = self.current()
+        enabled = [k for k in self._osc_defaults if self._osc_defaults[k]]
+        if term is not None:
+            enabled = [k for k in self._osc_actions if term.osc_enabled(k)]
+        if not enabled:
+            return ('#1f8a54', 'OSC off',
+                    'OSC: all neutralized (green).\n\n'
+                    'Every way a program can reach OUT of the terminal (set the '
+                    'window title, write your clipboard, make hyperlinks, change '
+                    'colours, ...) is turned off. Enable individual ones under '
+                    'View > OSC features, at your own risk.')
+        risks = [OSC_FEATURE_BY_KEY[k][3] for k in enabled]
+        labels = ', '.join(OSC_FEATURE_BY_KEY[k][0] for k in enabled)
+        if 'high' in risks:
+            colour, word = '#e5484d', 'OSC red'
+        else:
+            colour, word = '#e5a50a', 'OSC on'
+        return (colour, word,
+                'OSC: enabled features (%s).\n\n' % ('high risk' if 'high' in risks
+                                                     else 'elevated') +
+                'You have enabled: ' + labels + '.\n\n'
+                'A program can now use these to act on your system beyond drawing '
+                'its own screen. Turn them off under View > OSC features to return '
+                'to green.')
 
     def _display_level(self):
         """The display (unicode) risk axis as (colour, short, detail). Show
@@ -1024,14 +1066,16 @@ class MainWindow(QMainWindow):
     def _update_security_indicator(self):
         for lamp, level, axis in (
                 (self.sec_display, self._display_level(), 'Display'),
-                (self.sec_mode, self._mode_level(), 'Mode')):
+                (self.sec_mode, self._mode_level(), 'Mode'),
+                (self.sec_osc, self._osc_level(), 'OSC')):
             colour, short, _detail = level
             lamp.setIcon(_dot_icon(colour))
             lamp.setText(' ' + short)
             lamp.setToolTip(axis + ': ' + short + ' -- click for details')
 
     def _show_security_details(self):
-        detail = self._display_level()[2] + '\n\n' + self._mode_level()[2]
+        detail = (self._display_level()[2] + '\n\n' + self._mode_level()[2]
+                  + '\n\n' + self._osc_level()[2])
         dialog = QDialog(self)
         dialog.setWindowTitle('Security level')
         layout = QVBoxLayout(dialog)
@@ -1078,6 +1122,38 @@ class MainWindow(QMainWindow):
         # the command hook's advisory (already sanitized in hook.evaluate)
         self.statusBar().showMessage('Command hook: ' + message, 8000)
 
+    # -- granular OSC features ------------------------------------------------
+    def _apply_osc_defaults(self, term):
+        for key, enabled in self._osc_defaults.items():
+            term.apply_osc(key, enabled)
+
+    def set_osc(self, key, enabled):
+        """Enable/disable one OSC feature: apply it to the current tab, remember it
+        as the default for new tabs, persist, and refresh the security lamp (an
+        enabled feature dims it by its risk class)."""
+        if key in self._locked:
+            return                        # admin-locked; not user-changeable
+        term = self.current()
+        if term is not None:
+            term.apply_osc(key, enabled)
+        self._osc_defaults[key] = bool(enabled)
+        if key in self._osc_actions:
+            self._osc_actions[key].setChecked(bool(enabled))
+        # title/notify keep the legacy allow_title default in sync
+        self._default_allow_title = (self._osc_defaults.get('osc_title')
+                                     or self._osc_defaults.get('osc_notify'))
+        if enabled:
+            self._clear_advisories('osc')   # the "was ignored" notice is now stale
+        self._update_security_indicator()
+        self._persist()
+
+    def _on_cwd_changed(self, term, path):
+        # OSC 7 working directory (only when osc_cwd is enabled): show it as the
+        # tab's tooltip (non-intrusive; the path is already sanitized).
+        index = self.tabs.indexOf(term)
+        if index != -1:
+            self.tabs.setTabToolTip(index, path)
+
     def set_scrollback(self, lines):
         self._scrollback = int(lines)
         for i in range(self.tabs.count()):
@@ -1121,7 +1197,7 @@ class MainWindow(QMainWindow):
             ('osc_notice', [self.act_osc_notice]),
             ('tui', [self.act_tui]),
             ('allow_title', [self.act_title]),
-        ]
+        ] + [(k, [self._osc_actions[k]]) for k in self._osc_actions]
         for key, actions in gated:
             if key in self._locked:
                 for act in actions:
@@ -1159,6 +1235,7 @@ class MainWindow(QMainWindow):
             'allow_title': 'true' if self._default_allow_title else 'false',
             'osc_notice': 'true' if self._osc_notice else 'false',
             'persist_session': 'true' if self._persist_session else 'false',
+            **{k: 'true' if v else 'false' for k, v in self._osc_defaults.items()},
         }, locked=self._locked)
 
     # -- chrome ---------------------------------------------------------------
@@ -1374,22 +1451,31 @@ class MainWindow(QMainWindow):
         self.act_tui.toggled.connect(self.set_tui)
         view_menu.addAction(self.act_tui)
 
-        self.act_title = QAction(
-            _toggle_icon('preferences-desktop-notification', 'N', '#bf3989'),
-            'Allow program &title / notifications', self, checkable=True)
+        # act_title stays as a compatibility action (the combined title+notify
+        # toggle used by the settings dialog / session), but is NOT shown in the
+        # menu: the granular OSC submenu below supersedes it.
+        self.act_title = QAction('Allow program title / notifications', self,
+                                 checkable=True)
         self.act_title.setChecked(self._default_allow_title)
-        self.act_title.setToolTip(
-            'Let a program set the tab title (OSC 0/2) and send notifications '
-            '(OSC 9), the modern terminal protocol. Off by default; only takes '
-            'effect in TUI mode. Titles and notifications are sanitized to plain '
-            'ASCII. Clipboard-write and hyperlink escapes stay blocked.\n\n'
-            'Low residual risk: the most a program can do is choose the ASCII '
-            'text you see in the title or a notification (a spoofing surface); '
-            'it cannot run code, inject escapes or read your clipboard. So this '
-            'is a plain toggle without a danger lamp -- reserving those for the '
-            'higher-risk TUI and Show modes.')
         self.act_title.toggled.connect(self.set_allow_title)
-        view_menu.addAction(self.act_title)
+
+        # Granular OSC control: every way a program can reach OUT of the terminal,
+        # each individually toggleable with its layman attack-surface hint. All off
+        # by default; enabling one only has effect in TUI mode and dims the OSC
+        # security lamp by its risk class.
+        osc_menu = view_menu.addMenu('&OSC features')
+        osc_menu.setToolTip('Each is a way a program can act on your system '
+                            '(title, clipboard, ...). All neutralized by default; '
+                            'enable at your own risk (only in TUI mode).')
+        _risk_tag = {'low': '', 'medium': '   [risk: medium]',
+                     'high': '   [RISK: HIGH]'}
+        for key, label, codes, _dflt, risk, hint in OSC_FEATURES:
+            act = QAction(label + '  (OSC ' + codes + ')', self, checkable=True)
+            act.setChecked(self._osc_defaults.get(key, False))
+            act.setToolTip(hint + _risk_tag[risk])
+            act.toggled.connect(lambda on, k=key: self.set_osc(k, on))
+            osc_menu.addAction(act)
+            self._osc_actions[key] = act
 
         view_menu.addSeparator()
         sb_menu = view_menu.addMenu('&Scrollback')
