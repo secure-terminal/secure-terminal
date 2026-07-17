@@ -1102,9 +1102,10 @@ class SecureTerminal(QPlainTextEdit):
                 pal.setColor(QPalette.ColorRole.Base if role == 'bg'
                              else QPalette.ColorRole.Text, QColor(col))
                 self.setPalette(pal)
-        self._fmt_cache.clear()                        # re-resolve cell colours
-        if self._grid_mode():
-            self._render_tui()
+        # Re-resolve cell colours; the render itself is left to the coalescing
+        # timer (started after _handle_osc), so a program flooding OSC 4 palette
+        # changes cannot force one full re-render per change.
+        self._fmt_cache.clear()
 
     def _osc_clipboard(self, params):
         """OSC 52: <selection>;<base64|'?'>. WRITE only; a read query ('?') is
