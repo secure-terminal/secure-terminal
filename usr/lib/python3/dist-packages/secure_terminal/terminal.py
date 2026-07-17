@@ -65,6 +65,7 @@ risk indicator; the strict line mode remains the safe-by-construction default.
 import os
 import pty
 import re
+import copy
 import time
 import fcntl
 import signal
@@ -259,6 +260,17 @@ class SecureTerminal(QPlainTextEdit):
         self._screen = None
         self._stream = None
         self._fmt_cache = {}
+        # TUI grid view state: which pyte history rows are already rendered as
+        # permanent scrollback (by id), and how many blocks the live grid occupies
+        # at the bottom of the document. Lets each frame re-render only the grid.
+        self._top_ids = set()
+        self._grid_rows = 0
+        self._grid_seeded = False     # has this TUI screen been seeded from _raw
+        # snapshot of the primary pyte screen (buffer, history, cursor) saved as a
+        # full-screen program takes the alternate screen, and restored on exit --
+        # pyte has no separate alt buffer, so without this the program's clear/draw
+        # would destroy the primary screen and pollute the scrollback.
+        self._alt_saved = None
 
         # "modern terminal protocol": let a program set the title / notify.
         # Off by default; only has an effect in TUI mode (line mode strips
@@ -410,43 +422,48 @@ class SecureTerminal(QPlainTextEdit):
         self._sync_display()
 
     def _grid_mode(self):
-        """True when the fixed pyte grid should own the screen: TUI enabled AND a
-        full-screen program is actually drawing on the alternate screen. TUI
-        without such a program stays in line display, so the scrollback shows."""
-        return self.tui_active() and self._alt_screen
+        """True whenever TUI mode is on: the pyte grid owns the screen (with its
+        scrollback rendered above it), so a program can position the cursor -- a
+        completion menu, a progress display, a full-screen app -- and it renders
+        faithfully. CLI mode stays the safe one-dimensional line display."""
+        return self.tui_active()
 
     def _sync_display(self):
-        """Match the on-screen view to the current mode. The fixed pyte grid owns
-        the screen only while a full-screen program runs under TUI; otherwise the
-        scrolling line document does, and its scrollback is never blanked by a
-        mode toggle -- it is only rebuilt when LEAVING the grid (a program
-        exited), so entering/leaving TUI at a shell prompt is a visual no-op."""
+        """Match the on-screen view to the current mode. TUI mode shows the pyte
+        grid with its scrollback; CLI mode shows the scrolling line document. The
+        vertical scrollbar stays available in both (TUI now has scrollback too)."""
         grid = self._grid_mode()
         was_grid = self._grid_shown
         self._grid_shown = grid
         if grid:
-            # The pyte grid is scrollbar-independent (_tui_grid_size), so hiding
-            # the scrollbar fires no pyte.resize() -- which preserves a running
-            # program's frame across the switch.
-            self.setVerticalScrollBarPolicy(
-                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            if self._screen is None:
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            if not was_grid:
+                # Entering the grid view. pyte is NOT fed in CLI mode (kept out of
+                # the safe path), so rebuild it from the retained raw output: this
+                # reconstructs the scrollback AND a running program's current frame,
+                # so switching CLI->TUI never loses history (and no ~60% frame).
+                self._make_screen()      # fresh HistoryScreen + clean view
+                self._seed_grid()
+            elif self._screen is None:
                 self._make_screen()
             else:
-                # A program started in CLI mode made its screen at the CLI size;
-                # entering the grid must resize it to the full (scrollbar-hidden)
-                # window so it redraws full-screen (SIGWINCH), not at ~60%.
                 self._sync_tui_size()
             self._render_tui()
             return
         self._render_timer.stop()
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         if was_grid:
-            # A full-screen program just exited: rebuild the scrolling document
-            # from retained output. When we were already in line display (CLI, or
-            # TUI with no program), the document already holds the full
-            # scrollback, so leave it untouched -- no flicker, no history loss.
+            # Leaving TUI for CLI: rebuild the scrolling line document from the
+            # retained raw output (the grid view is discarded).
             self._rerender()
+
+    def _seed_grid(self):
+        """Replay the retained raw output into the fresh pyte screen, so entering
+        TUI shows the existing scrollback and any running program's frame. Bounded
+        by _raw's own cap; feeding is contained like the live stream."""
+        if self._screen is None or not self._raw:
+            return
+        self._feed_stream(self._raw.encode('utf-8', 'replace'))
 
     def current_tui(self):
         return self._tui
@@ -482,19 +499,14 @@ class SecureTerminal(QPlainTextEdit):
         return cols, rows
 
     def _tui_grid_size(self):
-        """The grid for the pyte screen: scrollbar-INDEPENDENT, because TUI mode
-        hides the vertical scrollbar. Computing it the same whether or not the
-        line-mode scrollbar is currently shown means flipping into TUI mode (which
-        toggles that scrollbar) does not change the grid, so it triggers no
-        pyte.resize() -- and pyte.resize() clears the alternate screen, which would
-        wipe the running program's frame we are switching in to see."""
+        """Columns and rows for the pyte grid: the text area (viewport minus the
+        document margins) at the current font. TUI mode now keeps the vertical
+        scrollbar (the grid has scrollback), so its width is part of the viewport
+        and is not reclaimed."""
         metrics = self.fontMetrics()
         char_w = metrics.horizontalAdvance('M') or 1
         char_h = metrics.height() or 1
         width, height = self._text_area()
-        bar = self.verticalScrollBar()
-        if bar is not None and bar.isVisible():
-            width += bar.width()          # reclaim the space TUI mode will not use
         cols = max(2, width // char_w)
         rows = max(2, height // char_h)
         return cols, rows
@@ -511,11 +523,28 @@ class SecureTerminal(QPlainTextEdit):
         except OSError:
             pass            # a closed/invalid pty just misses this resize
 
+    def _history_size(self):
+        """Depth of the pyte scrollback. Bounded so that entering the grid view
+        (which renders the whole history once) does not stall on a huge buffer:
+        ~2000 lines rebuild in a few hundred ms, and interactive output only ever
+        renders the small per-frame delta after that."""
+        cap = self._scrollback or 2000
+        return max(200, min(cap, 2000))
+
     def _make_screen(self):
         cols, rows = self._tui_grid_size()
-        self._screen = pyte.Screen(cols, rows)
+        self._screen = pyte.HistoryScreen(cols, rows,
+                                          history=self._history_size(), ratio=0.5)
         self._stream = pyte.ByteStream(self._screen)
         self._set_winsize(cols, rows)
+        self._reset_grid_view()
+
+    def _reset_grid_view(self):
+        """Start the grid view from a clean document: the next render rebuilds the
+        whole scrollback + grid (all history rows count as new)."""
+        self.clear()
+        self._top_ids = set()
+        self._grid_rows = 0
 
     def _sync_tui_size(self):
         if self._screen is None:
@@ -571,44 +600,97 @@ class SecureTerminal(QPlainTextEdit):
         return fmt
 
     def _render_tui(self):
-        """Repaint the whole pyte screen grid into the widget. Every cell's
-        character is still ASCII/unicode-filtered (tui_cell), so a program can
-        position and colour text but cannot smuggle a deceptive glyph."""
+        """Repaint the TUI view: the scrolling history ABOVE the live pyte grid.
+        A scrolled-off history line never changes, so it is appended to the
+        document ONCE; only the live grid (screen.lines rows) is re-rendered each
+        frame, so the cost is independent of how deep the scrollback is. Every
+        cell is still tui_cell-filtered, so a program can position and colour text
+        but cannot smuggle a deceptive glyph."""
         screen = self._screen
         if screen is None:
             return
         self.setUpdatesEnabled(False)
-        self.clear()
-        cursor = self.textCursor()
-        last = screen.lines - 1
-        for y in range(screen.lines):
-            row = screen.buffer[y]
-            run_text = ''
-            run_fmt = None
-            for x in range(screen.columns):
-                cell = row[x]
-                fmt = self._pyte_format(cell)
-                ch = tui_cell(cell.data, self._mode)
-                if run_text and fmt is run_fmt:
-                    run_text += ch
-                else:
-                    if run_text:
-                        cursor.insertText(run_text, run_fmt)
-                    run_text, run_fmt = ch, fmt
-            if run_text:
-                cursor.insertText(run_text, run_fmt)
-            if y != last:
-                cursor.insertText('\n')
+        self._delete_grid()
+        self._append_scrollback(screen)
+        self._append_grid(screen)
         self.setUpdatesEnabled(True)
-        if not screen.cursor.hidden:
-            block = self.document().findBlockByNumber(
-                min(screen.cursor.y, last))
-            if block.isValid():
-                pos = block.position() + min(screen.cursor.x, screen.columns)
-                tc = self.textCursor()
-                tc.setPosition(min(pos, self.document().characterCount() - 1))
-                self.setTextCursor(tc)
+        self._place_grid_cursor(screen)
         self.viewport().update()
+
+    def _insert_grid_row(self, cursor, row, columns):
+        """Insert one pyte row (coalescing same-format runs) at the cursor."""
+        run_text = ''
+        run_fmt = None
+        for x in range(columns):
+            cell = row[x]
+            fmt = self._pyte_format(cell)
+            ch = tui_cell(cell.data, self._mode)
+            if run_text and fmt is run_fmt:
+                run_text += ch
+            else:
+                if run_text:
+                    cursor.insertText(run_text, run_fmt)
+                run_text, run_fmt = ch, fmt
+        if run_text:
+            cursor.insertText(run_text, run_fmt)
+
+    def _delete_grid(self):
+        """Remove the live grid (the last _grid_rows blocks) plus the newline that
+        joins it to the scrollback, leaving the document ending at the scrollback."""
+        if self._grid_rows <= 0:
+            return
+        doc = self.document()
+        first = doc.blockCount() - self._grid_rows
+        cur = QTextCursor(doc.findBlockByNumber(max(0, first)))
+        cur.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+        if first > 0:                     # also eat the newline before the grid
+            cur.movePosition(QTextCursor.MoveOperation.PreviousCharacter,
+                             QTextCursor.MoveMode.KeepAnchor)
+        cur.movePosition(QTextCursor.MoveOperation.End,
+                         QTextCursor.MoveMode.KeepAnchor)
+        cur.removeSelectedText()
+        self._grid_rows = 0
+
+    def _append_scrollback(self, screen):
+        """Append the newly scrolled-off history rows (identified by object id, so
+        only the new tail is rendered) at the end of the document."""
+        current = list(screen.history.top)
+        new_rows = [r for r in current if id(r) not in self._top_ids]
+        if new_rows:
+            cur = self.textCursor()
+            cur.movePosition(QTextCursor.MoveOperation.End)
+            have = self.document().characterCount() > 1
+            for row in new_rows:
+                if have:
+                    cur.insertText('\n')
+                self._insert_grid_row(cur, row, screen.columns)
+                have = True
+        self._top_ids = {id(r) for r in current}
+
+    def _append_grid(self, screen):
+        """Append the live grid (screen.lines rows) at the end of the document."""
+        cur = self.textCursor()
+        cur.movePosition(QTextCursor.MoveOperation.End)
+        have = self.document().characterCount() > 1
+        for y in range(screen.lines):
+            if have:
+                cur.insertText('\n')
+            self._insert_grid_row(cur, screen.buffer[y], screen.columns)
+            have = True
+        self._grid_rows = screen.lines
+
+    def _place_grid_cursor(self, screen):
+        if screen.cursor.hidden:
+            return
+        doc = self.document()
+        grid_top = doc.blockCount() - self._grid_rows
+        block = doc.findBlockByNumber(
+            min(grid_top + screen.cursor.y, doc.blockCount() - 1))
+        if block.isValid():
+            pos = block.position() + min(screen.cursor.x, screen.columns)
+            tc = self.textCursor()
+            tc.setPosition(min(pos, doc.characterCount() - 1))
+            self.setTextCursor(tc)
 
     # -- optional ANSI colours ------------------------------------------------
     def apply_colors(self, enabled):
@@ -774,44 +856,60 @@ class SecureTerminal(QPlainTextEdit):
             alt_changed = self._alt_screen != was_alt
             if not self._alt_screen:
                 self._tui_hint_shown = False   # a later full-screen app re-advises
+            # snapshot the primary screen as a full-screen program takes over, so
+            # it can be restored intact on exit (see below).
+            if (alt_changed and self._alt_screen and self.tui_active()
+                    and self._screen is not None):
+                self._alt_saved = (copy.deepcopy(self._screen.buffer),
+                                   copy.deepcopy(self._screen.history),
+                                   copy.deepcopy(self._screen.cursor))
 
-        # Feed the background pyte screen only when pyte is actually available; on
-        # a box without python3-pyte, _alt_screen can still be set (detection is
-        # pure) but pyte.Screen() would crash and wedge the tab.
-        if (self.tui_active() or self._alt_screen) and pyte is not None:
+        # Feed pyte ONLY in TUI mode -- never in the safe CLI mode, so the escape
+        # interpreter is kept out of the default path. On CLI->TUI the screen is
+        # rebuilt from the retained raw output (see _seed_grid), so no CLI-period
+        # output is lost. Needs pyte present (a box without it cannot do TUI).
+        if self.tui_active() and pyte is not None:
             if self._screen is None:
                 self._make_screen()
             self._feed_stream(data)
 
-        # A full-screen program entering/leaving the alternate screen under TUI
-        # flips the on-screen view between the fixed grid and the scrolling
-        # document; sync the scrollbar and repaint on that transition.
-        if alt_changed and self.tui_active():
-            self._sync_display()
+        # A full-screen program just left the alternate screen: restore the primary
+        # screen snapshot (a real terminal restores the primary buffer; pyte has no
+        # separate alt buffer), then rebuild the view so the scrollback is clean and
+        # the pre-program screen is back.
+        if (alt_changed and not self._alt_screen and self.tui_active()
+                and self._screen is not None and self._alt_saved is not None):
+            self._screen.buffer, self._screen.history, self._screen.cursor = \
+                self._alt_saved
+            self._alt_saved = None
+            self._reset_grid_view()
+            self._render_tui()
 
         # Titles/notifications are a TUI-mode feature, independent of whether a
         # full-screen program currently owns the grid.
         if self.tui_active() and self._allow_title:
             self._handle_title_and_notify(data)
 
+        # Retain the raw output in BOTH modes -- for a mode re-render (TUI->CLI)
+        # and for seeding the TUI grid (CLI->TUI) -- so neither switch loses output.
+        text = self._absorb_caret(text)         # drop a shell's duplicate ^C echo
+
         if self._grid_mode():
+            self._raw += text
+            if len(self._raw) > self._RAW_MAX:
+                self._raw = self._raw[-self._RAW_MAX:]
             if not self._render_timer.isActive():
                 self._render_timer.start(16)     # coalesce bursts into ~60fps
             return
 
-        # line mode: retain the raw output (for a mode re-render) and display it
-        # through the escape-stripping pipeline. Prepend any escape tail held back
-        # from the previous chunk and hold back a new incomplete tail, so a
-        # sequence split across reads (a long OSC title is the usual victim) is
-        # never leaked as literal text.
-        text = self._absorb_caret(text)         # drop a shell's duplicate ^C echo
+        # CLI line mode: display through the escape-stripping pipeline. Prepend any
+        # escape tail held back from the previous chunk and hold back a new
+        # incomplete tail, so a sequence split across reads (a long OSC title is the
+        # usual victim) is never leaked as literal text.
         text = self._esc_carry + text
         text, self._esc_carry = split_trailing_escape(text)
-        # An OSC (ESC ]) is stripped in PURE CLI mode; flag it so the window can
-        # notice the neutralized escape. Only in pure CLI mode: in TUI mode an OSC
-        # title/notification may be handled (allow_title), so a "was ignored" notice
-        # would contradict it. The window de-duplicates to once per tab.
-        if not self.tui_active() and '\x1b]' in text:
+        # An OSC (ESC ]) is stripped in CLI mode; flag it so the window can notice.
+        if '\x1b]' in text:
             self.osc_used.emit()
         self._raw += text
         if len(self._raw) > self._RAW_MAX:
