@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget, QSizePolicy, QFileDialog, QInputDialog, QColorDialog,
     QMenu, QDialog, QGridLayout, QPushButton, QLineEdit,
     QVBoxLayout, QHBoxLayout, QPlainTextEdit, QButtonGroup, QFrame,
-    QComboBox, QCheckBox, QFormLayout, QMessageBox,
+    QComboBox, QCheckBox, QFormLayout, QMessageBox, QKeySequenceEdit,
 )
 
 from PyQt6.QtNetwork import QLocalServer
@@ -252,6 +252,16 @@ class MainWindow(QMainWindow):
         # nuisance surface, so silence is the safe default.
         _bell = cfg.get('bell', 'off')
         self._default_bell = _bell if _bell in ('off', 'audible', 'visual') else 'off'
+        # user overrides for window keyboard shortcuts: "ident=Seq ident=Seq ...".
+        # Only overrides (bindings differing from the built-in default) are stored;
+        # _bind() applies them as each action is created, and the Keyboard
+        # Shortcuts dialog edits them. An empty Seq unbinds an action.
+        self._keybindings = {}
+        for _entry in cfg.get('keybindings', '').split():
+            if '=' in _entry:
+                _kid, _kseq = _entry.split('=', 1)
+                self._keybindings[_kid.strip()] = _kseq.strip()
+        self._shortcuts = {}          # ident -> (action, default_seq_str, label)
         # session persistence is on unless explicitly disabled
         self._persist_session = cfg.get('persist_session') != 'false'
         # optional opt-in command hook, configured only via a settings drop-in
@@ -1299,6 +1309,8 @@ class MainWindow(QMainWindow):
             'tui': 'true' if self._default_tui else 'false',
             'allow_title': 'true' if self._default_allow_title else 'false',
             'bell': self._default_bell,
+            'keybindings': ' '.join('%s=%s' % (i, self._keybindings[i])
+                                    for i in sorted(self._keybindings)),
             'osc_notice': 'true' if self._osc_notice else 'false',
             'osc_notice_off': ','.join(sorted(self._osc_notice_off)),
             'persist_session': 'true' if self._persist_session else 'false',
@@ -1311,12 +1323,12 @@ class MainWindow(QMainWindow):
 
         file_menu = bar.addMenu('&File')
         self.act_new = QAction(QIcon.fromTheme('tab-new'), 'New &Tab', self)
-        self.act_new.setShortcut(QKeySequence('Ctrl+Shift+T'))
+        self._bind(self.act_new, 'new_tab', 'Ctrl+Shift+T')
         self.act_new.triggered.connect(lambda: self.new_tab())
         file_menu.addAction(self.act_new)
 
         self.act_new_cmd = QAction('New Tab &Running...', self)
-        self.act_new_cmd.setShortcut(QKeySequence('Ctrl+Shift+R'))
+        self._bind(self.act_new_cmd, 'new_command_tab', 'Ctrl+Shift+R')
         self.act_new_cmd.setToolTip(
             'Open a tab running a specific program (e.g. ssh host, tmux, claude) '
             'instead of the login shell.')
@@ -1325,14 +1337,14 @@ class MainWindow(QMainWindow):
 
         self.act_close = QAction(QIcon.fromTheme('window-close'),
                                  '&Close Tab', self)
-        self.act_close.setShortcut(QKeySequence('Ctrl+Shift+W'))
+        self._bind(self.act_close, 'close_tab', 'Ctrl+Shift+W')
         self.act_close.triggered.connect(
             lambda: self.close_tab(self.tabs.currentIndex()))
         file_menu.addAction(self.act_close)
 
         self.act_save = QAction(QIcon.fromTheme('document-save'),
                                 '&Save Transcript...', self)
-        self.act_save.setShortcut(QKeySequence('Ctrl+Shift+S'))
+        self._bind(self.act_save, 'save_transcript', 'Ctrl+Shift+S')
         self.act_save.setToolTip(
             'Save this tab\'s scrollback to a file. It is already sanitized '
             'plain ASCII, so the saved file is safe to open anywhere.')
@@ -1342,7 +1354,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         self.act_terminate = QAction(QIcon.fromTheme('process-stop'),
                                      '&Terminate Program', self)
-        self.act_terminate.setShortcut(QKeySequence('Ctrl+Shift+K'))
+        self._bind(self.act_terminate, 'terminate', 'Ctrl+Shift+K')
         self.act_terminate.setToolTip(
             'Force-terminate the running program (SIGTERM, then SIGKILL). '
             'Use when Ctrl+C and Ctrl+\\ are ignored, e.g. a stuck full-screen '
@@ -1367,48 +1379,48 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
         act_quit = QAction(QIcon.fromTheme('application-exit'), '&Quit', self)
-        act_quit.setShortcut(QKeySequence('Ctrl+Q'))
+        self._bind(act_quit, 'quit', 'Ctrl+Q')
         act_quit.triggered.connect(self.close)
         file_menu.addAction(act_quit)
 
         edit_menu = bar.addMenu('&Edit')
         self.act_copy = QAction(QIcon.fromTheme('edit-copy'), '&Copy', self)
-        self.act_copy.setShortcut(QKeySequence('Ctrl+Shift+C'))
+        self._bind(self.act_copy, 'copy', 'Ctrl+Shift+C')
         self.act_copy.triggered.connect(self.copy_selection)
         edit_menu.addAction(self.act_copy)
 
         self.act_paste = QAction(QIcon.fromTheme('edit-paste'), '&Paste', self)
-        self.act_paste.setShortcut(QKeySequence('Ctrl+Shift+V'))
+        self._bind(self.act_paste, 'paste', 'Ctrl+Shift+V')
         self.act_paste.triggered.connect(self.paste_clipboard)
         edit_menu.addAction(self.act_paste)
 
         self.act_select_all = QAction(QIcon.fromTheme('edit-select-all'),
                                       'Select &All', self)
-        self.act_select_all.setShortcut(QKeySequence('Ctrl+Shift+A'))
+        self._bind(self.act_select_all, 'select_all', 'Ctrl+Shift+A')
         self.act_select_all.triggered.connect(self.select_all)
         edit_menu.addAction(self.act_select_all)
 
         view_menu = bar.addMenu('&View')
         act_zin = QAction(QIcon.fromTheme('zoom-in'), 'Zoom &In', self)
-        act_zin.setShortcut(QKeySequence.StandardKey.ZoomIn)
+        self._bind(act_zin, 'zoom_in', QKeySequence.StandardKey.ZoomIn)
         act_zin.triggered.connect(self.zoom_in)
         view_menu.addAction(act_zin)
 
         act_zout = QAction(QIcon.fromTheme('zoom-out'), 'Zoom &Out', self)
-        act_zout.setShortcut(QKeySequence.StandardKey.ZoomOut)
+        self._bind(act_zout, 'zoom_out', QKeySequence.StandardKey.ZoomOut)
         act_zout.triggered.connect(self.zoom_out)
         view_menu.addAction(act_zout)
 
         act_zreset = QAction(QIcon.fromTheme('zoom-original'),
                              '&Reset Zoom', self)
-        act_zreset.setShortcut(QKeySequence('Ctrl+0'))
+        self._bind(act_zreset, 'zoom_reset', 'Ctrl+0')
         act_zreset.triggered.connect(self.zoom_reset)
         view_menu.addAction(act_zreset)
 
         view_menu.addSeparator()
         self.act_full = QAction(QIcon.fromTheme('view-fullscreen'),
                                 '&Full Screen', self, checkable=True)
-        self.act_full.setShortcut(QKeySequence('F11'))
+        self._bind(self.act_full, 'fullscreen', 'F11')
         self.act_full.triggered.connect(self.toggle_fullscreen)
         view_menu.addAction(self.act_full)
 
@@ -1623,7 +1635,7 @@ class MainWindow(QMainWindow):
         act_global.triggered.connect(self.show_global_settings)
         settings_menu.addAction(act_global)
         act_command = QAction('&Command...', self)
-        act_command.setShortcut(QKeySequence('Ctrl+Shift+P'))
+        self._bind(act_command, 'command_palette', 'Ctrl+Shift+P')
         act_command.setToolTip('Type a slash command to change a setting, e.g. '
                                '/mode reveal or /help.')
         act_command.triggered.connect(self.show_command_palette)
@@ -1637,9 +1649,113 @@ class MainWindow(QMainWindow):
         settings_menu.addAction(act_locations)
 
         help_menu = bar.addMenu('&Help')
+        act_keys = QAction(QIcon.fromTheme('preferences-desktop-keyboard'),
+                           '&Keyboard Shortcuts...', self)
+        act_keys.setToolTip('List every window shortcut and rebind it.')
+        act_keys.triggered.connect(self.show_shortcuts)
+        self._bind(act_keys, 'shortcuts_help', 'F1')
+        help_menu.addAction(act_keys)
+        help_menu.addSeparator()
         act_about = QAction(QIcon.fromTheme('help-about'), '&About', self)
         act_about.triggered.connect(self.show_about)
         help_menu.addAction(act_about)
+
+    # -- window keyboard shortcuts: documented + configurable -----------------
+    def _bind(self, action, ident, default_seq):
+        """Give `action` a documented, user-configurable window shortcut. Applies
+        the config/user override for `ident` when present, else `default_seq` (a
+        QKeySequence string or a QKeySequence.StandardKey), and registers it so the
+        Keyboard Shortcuts dialog can list and rebind it."""
+        if isinstance(default_seq, QKeySequence.StandardKey):
+            default = QKeySequence(default_seq).toString()
+        else:
+            default = default_seq
+        seq = self._keybindings.get(ident, default)
+        action.setShortcut(QKeySequence(seq))
+        label = action.text().replace('&', '').replace('...', '').strip()
+        self._shortcuts[ident] = (action, default, label)
+
+    def _set_shortcuts(self, mapping):
+        """Apply a {ident: seq_string} mapping to the registered actions. Returns a
+        list of (seq, [idents]) conflicts (two actions bound to the same non-empty
+        combination); when non-empty NOTHING is applied. Otherwise applies, records
+        only the non-default overrides, and persists."""
+        seen = {}
+        for ident, seq in mapping.items():
+            norm = QKeySequence(seq).toString()   # canonicalise ("ctrl+t" -> "Ctrl+T")
+            if norm:
+                seen.setdefault(norm, []).append(ident)
+        conflicts = [(seq, ids) for seq, ids in seen.items() if len(ids) > 1]
+        if conflicts:
+            return conflicts
+        for ident, seq in mapping.items():
+            entry = self._shortcuts.get(ident)
+            if entry is None:
+                continue
+            action, default, label = entry
+            norm = QKeySequence(seq).toString()
+            action.setShortcut(QKeySequence(norm))
+            self._shortcuts[ident] = (action, default, label)
+            if norm == QKeySequence(default).toString():
+                self._keybindings.pop(ident, None)     # back to default -> no override
+            else:
+                self._keybindings[ident] = norm
+        self._persist()
+        return []
+
+    def show_shortcuts(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Keyboard Shortcuts')
+        layout = QVBoxLayout(dialog)
+        intro = QLabel(
+            'Window shortcuts. Click a field and press a new combination to '
+            'rebind it, or clear it to unbind. Terminal control keys (Ctrl+C, '
+            'Ctrl+U, Ctrl+R and the rest) are always sent to the running program '
+            'and are not remappable here.')
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        grid = QGridLayout()
+        edits = {}
+        for row, ident in enumerate(sorted(self._shortcuts,
+                                            key=lambda i: self._shortcuts[i][2])):
+            action, _default, label = self._shortcuts[ident]
+            grid.addWidget(QLabel(label), row, 0)
+            edit = QKeySequenceEdit(action.shortcut())
+            edits[ident] = edit
+            grid.addWidget(edit, row, 1)
+        layout.addLayout(grid)
+        buttons = QHBoxLayout()
+        reset = QPushButton('Reset to defaults')
+
+        def _do_reset():
+            for ident, edit in edits.items():
+                edit.setKeySequence(QKeySequence(self._shortcuts[ident][1]))
+        reset.clicked.connect(_do_reset)
+        buttons.addWidget(reset)
+        buttons.addStretch(1)
+        cancel = QPushButton('Cancel')
+        cancel.clicked.connect(dialog.reject)
+        buttons.addWidget(cancel)
+        save = QPushButton('Save')
+        save.setDefault(True)
+
+        def _do_save():
+            mapping = {i: e.keySequence().toString() for i, e in edits.items()}
+            conflicts = self._set_shortcuts(mapping)
+            if conflicts:
+                lines = '\n'.join(
+                    '  %s : %s' % (seq, ', '.join(self._shortcuts[i][2] for i in ids))
+                    for seq, ids in conflicts)
+                QMessageBox.warning(
+                    dialog, 'Shortcut conflict',
+                    'The same combination is assigned to more than one action; '
+                    'change one before saving:\n\n' + lines)
+                return
+            dialog.accept()
+        save.clicked.connect(_do_save)
+        buttons.addWidget(save)
+        layout.addLayout(buttons)
+        dialog.exec()
 
     def show_about(self):
         dialog = QDialog(self)
