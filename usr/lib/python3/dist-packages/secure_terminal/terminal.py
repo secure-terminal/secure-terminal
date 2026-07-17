@@ -119,6 +119,11 @@ _RISK_LABELS = {
 # the codes for enabled OSC features and ignores the rest (still stripped).
 _OSC_ANY = re.compile(rb'\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)')
 _OSC_CLIP_MAX = 64 * 1024        # cap a clipboard payload; no unbounded writes
+# OSC 8 hyperlink: ESC ] 8 ; <params> ; <URI> BEL <text> ESC ] 8 ; ; BEL. Captures
+# the real target URI and the visible text, so the true destination can be shown
+# (the display text can differ from the target -- the phishing risk).
+_OSC8 = re.compile(rb'\x1b\]8;[^;\x07\x1b]*;([^\x07\x1b]*)\x07(.*?)\x1b\]8;;\x07',
+                   re.DOTALL)
 
 # Alternate-screen enter/leave, as BYTES: pyte has no alt buffer, so the feed path
 # acts on these to snapshot/restore the primary screen at the exact boundary.
@@ -1036,6 +1041,16 @@ class SecureTerminal(QPlainTextEdit):
             if title and title != self._last_title:
                 self._last_title = title
                 self.title_changed.emit(title)
+        if self._osc['osc_hyperlink']:
+            for m in _OSC8.finditer(data):
+                uri = sanitize_title(m.group(1).decode('utf-8', 'replace'))
+                text = sanitize_title(m.group(2).decode('utf-8', 'replace'))
+                if uri:
+                    # Surface the REAL target next to the visible text -- the
+                    # display text can differ from where the link points, so seeing
+                    # both is the whole anti-phishing value. (pyte has no per-cell
+                    # hyperlink model, so inline-clickable rendering is future work.)
+                    self.notified.emit('link: ' + (text or uri) + ' -> ' + uri)
         for match in _OSC_ANY.finditer(data):
             code = int(match.group(1))
             params = match.group(2)

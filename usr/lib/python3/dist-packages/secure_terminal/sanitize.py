@@ -149,9 +149,10 @@ OSC_FEATURES = (
     ('osc_notify', 'Desktop notifications', '9', False, 'medium',
      'Lets a program raise a desktop notification. The text can be faked, e.g. '
      '"your session expired, run this command".'),
-    ('osc_hyperlink', 'Clickable hyperlinks', '8', False, 'medium',
-     'Lets a program make clickable links whose visible text can differ from the '
-     'real target -- classic phishing.'),
+    ('osc_hyperlink', 'Hyperlinks', '8', False, 'medium',
+     'A program can make links whose visible text differs from the real target '
+     '(classic phishing). When enabled, the true target is surfaced next to the '
+     'text so you can see where a link really points.'),
     ('osc_clipboard', 'System clipboard', '52', False, 'high',
      'Lets a program WRITE your system clipboard (so your next paste runs its '
      'command) or read it back to itself. The most dangerous terminal escape.'),
