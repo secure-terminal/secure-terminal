@@ -116,6 +116,11 @@ _RISK_LABELS = {
 # OSC 9 ";<text>" (BEL or ST terminated): the iTerm2-style desktop notification.
 _OSC9 = re.compile(rb'\x1b\]9;([^\x07\x1b]*)(?:\x07|\x1b\\)')
 
+# Alternate-screen enter/leave, as BYTES: pyte has no alt buffer, so the feed path
+# acts on these to snapshot/restore the primary screen at the exact boundary.
+_ALT_ENTER_BYTES = (b'\x1b[?1049h', b'\x1b[?1047h', b'\x1b[?47h')
+_ALT_LEAVE_BYTES = (b'\x1b[?1049l', b'\x1b[?1047l', b'\x1b[?47l')
+
 
 def tui_available():
     return pyte is not None
@@ -327,6 +332,12 @@ class SecureTerminal(QPlainTextEdit):
         self._fd = None
         self._pid = None
         self._start(command)
+        if self._tui:
+            # A tab that STARTS in TUI must enter the grid view properly (seed the
+            # pyte screen from any restored scrollback, set _grid_shown and the
+            # scrollbar), or the first output would clear the history unseeded and a
+            # later switch to CLI would not rebuild the line document.
+            self._sync_display()
 
     # -- appearance: theme + zoom ---------------------------------------------
     def apply_theme(self, theme):
@@ -609,12 +620,21 @@ class SecureTerminal(QPlainTextEdit):
         screen = self._screen
         if screen is None:
             return
+        # If the user has scrolled up into the history to read it while output is
+        # still arriving, do NOT yank the view back to the bottom on every frame
+        # (and do not clobber a selection); only auto-follow when already at the end.
+        bar = self.verticalScrollBar()
+        at_bottom = bar is None or bar.value() >= bar.maximum() - 2
+        prev_scroll = bar.value() if bar is not None else 0
         self.setUpdatesEnabled(False)
         self._delete_grid()
         self._append_scrollback(screen)
         self._append_grid(screen)
         self.setUpdatesEnabled(True)
-        self._place_grid_cursor(screen)
+        if at_bottom:
+            self._place_grid_cursor(screen)
+        elif bar is not None:
+            bar.setValue(min(prev_scroll, bar.maximum()))
         self.viewport().update()
 
     def _insert_grid_row(self, cursor, row, columns):
@@ -677,7 +697,11 @@ class SecureTerminal(QPlainTextEdit):
                 cur.insertText('\n')
             self._insert_grid_row(cur, screen.buffer[y], screen.columns)
             have = True
-        self._grid_rows = screen.lines
+        # Actual block count, not screen.lines: if the scrollback block cap is
+        # smaller than the grid (a tiny /scrollback on a tall display), Qt prunes
+        # blocks as they are inserted, and a stale _grid_rows would make the next
+        # _delete_grid compute a negative start and wipe the whole document.
+        self._grid_rows = min(screen.lines, self.document().blockCount())
 
     def _place_grid_cursor(self, screen):
         if screen.cursor.hidden:
@@ -856,34 +880,16 @@ class SecureTerminal(QPlainTextEdit):
             alt_changed = self._alt_screen != was_alt
             if not self._alt_screen:
                 self._tui_hint_shown = False   # a later full-screen app re-advises
-            # snapshot the primary screen as a full-screen program takes over, so
-            # it can be restored intact on exit (see below).
-            if (alt_changed and self._alt_screen and self.tui_active()
-                    and self._screen is not None):
-                self._alt_saved = (copy.deepcopy(self._screen.buffer),
-                                   copy.deepcopy(self._screen.history),
-                                   copy.deepcopy(self._screen.cursor))
 
         # Feed pyte ONLY in TUI mode -- never in the safe CLI mode, so the escape
         # interpreter is kept out of the default path. On CLI->TUI the screen is
         # rebuilt from the retained raw output (see _seed_grid), so no CLI-period
-        # output is lost. Needs pyte present (a box without it cannot do TUI).
+        # output is lost. _feed_stream handles the alternate-screen snapshot/restore
+        # inline (at the byte boundary), so this works for live output and the seed.
         if self.tui_active() and pyte is not None:
             if self._screen is None:
                 self._make_screen()
             self._feed_stream(data)
-
-        # A full-screen program just left the alternate screen: restore the primary
-        # screen snapshot (a real terminal restores the primary buffer; pyte has no
-        # separate alt buffer), then rebuild the view so the scrollback is clean and
-        # the pre-program screen is back.
-        if (alt_changed and not self._alt_screen and self.tui_active()
-                and self._screen is not None and self._alt_saved is not None):
-            self._screen.buffer, self._screen.history, self._screen.cursor = \
-                self._alt_saved
-            self._alt_saved = None
-            self._reset_grid_view()
-            self._render_tui()
 
         # Titles/notifications are a TUI-mode feature, independent of whether a
         # full-screen program currently owns the grid.
@@ -924,14 +930,65 @@ class SecureTerminal(QPlainTextEdit):
                          'here.')
 
     def _feed_stream(self, data):
-        """Feed bytes to the pyte parser, containing any error. pyte parses
-        untrusted program output, and a version quirk or an odd sequence (real
-        htop/vim/tmux emit private SGR that some pyte builds mishandle) must never
-        crash the terminal -- worst case a rendering glitch, never a core dump."""
+        """Feed bytes to pyte, handling alternate-screen enter/leave INLINE so the
+        primary screen is snapshotted/restored at the exact byte boundary. This is
+        used for live output AND the seed replay, so bytes after a leave (the
+        shell's next prompt) land on the RESTORED primary, and a full-screen
+        program's frames never pollute the scrollback -- pyte itself has no alt
+        buffer."""
+        if self._stream is None:
+            return
+        pos, n = 0, len(data)
+        while pos < n:
+            nxt, kind, mlen = n, None, 0
+            for marker in _ALT_ENTER_BYTES:
+                i = data.find(marker, pos)
+                if 0 <= i < nxt:
+                    nxt, kind, mlen = i, 'enter', len(marker)
+            for marker in _ALT_LEAVE_BYTES:
+                i = data.find(marker, pos)
+                if 0 <= i < nxt:
+                    nxt, kind, mlen = i, 'leave', len(marker)
+            self._feed_bytes(data[pos:nxt + mlen])   # up to and incl. the marker
+            if kind == 'enter':
+                self._alt_enter()
+            elif kind == 'leave':
+                self._alt_leave()
+            pos = nxt + mlen if kind else n
+
+    def _feed_bytes(self, chunk):
+        """Feed one segment to the pyte parser, containing any error -- pyte parses
+        untrusted output and a version quirk (private SGR from htop/vim/tmux) must
+        never crash the terminal, worst case a rendering glitch, never a core dump."""
+        if not chunk:
+            return
         try:
-            self._stream.feed(data)
+            self._stream.feed(chunk)
         except Exception:            # noqa: BLE001 -- third-party parser, any error
             pass
+
+    def _alt_enter(self):
+        """A full-screen program took the alternate screen: snapshot the primary
+        screen so it can be restored intact on exit (pyte has no alt buffer)."""
+        if self._alt_saved is not None or self._screen is None:
+            return                        # already in the alt screen; do not nest
+        s = self._screen
+        self._alt_saved = (
+            copy.deepcopy(s.buffer),
+            s.history._replace(top=copy.copy(s.history.top),
+                               bottom=copy.copy(s.history.bottom)),
+            copy.copy(s.cursor))
+
+    def _alt_leave(self):
+        """A full-screen program left the alternate screen: restore the primary
+        screen and rebuild the view, so the pre-program screen is back and the
+        scrollback is clean."""
+        if self._alt_saved is None or self._screen is None:
+            return
+        self._screen.buffer, self._screen.history, self._screen.cursor = \
+            self._alt_saved
+        self._alt_saved = None
+        self._reset_grid_view()           # rebuild scrollback from restored history
 
     def _handle_title_and_notify(self, data):
         """When the "modern protocol" setting is on, surface the program's title
