@@ -295,6 +295,9 @@ class SecureTerminal(QPlainTextEdit):
     # a bell fired with the 'tray' channel enabled; the window shows a passive
     # system-tray popup (the terminal has no tray icon of its own). Carries a label.
     bell_tray = pyqtSignal(str)
+    # a program in this tab asked to READ the clipboard (OSC 52 query) and the tab
+    # has not yet decided; the window asks the user ONCE PER TAB (see osc_clipboard_read).
+    clipboard_read_requested = pyqtSignal()
 
     def __init__(self, parent=None, command=None, tui=False, history='',
                  cli_terminfo=False):
@@ -400,6 +403,11 @@ class SecureTerminal(QPlainTextEdit):
         self._bell_sound = ''
         self._sound_effect = None
         self._last_bell = 0.0
+        # OSC 52 clipboard-READ decision for THIS tab (ask once per tab): None =
+        # not yet asked, 'pending' = the dialog is open, True/False = the user's
+        # answer. Rate-limited so a granted tab cannot be flood-exfiltrated.
+        self._clipboard_read = None
+        self._last_clip_read = 0.0
         self._seeding = False         # True while replaying _raw into pyte (no bell)
         self._last_title = ''
         self._reported_cwd = ''       # OSC 7 working directory, when osc_cwd is on
@@ -1417,8 +1425,11 @@ class SecureTerminal(QPlainTextEdit):
                 text = sanitize_title(params.decode('ascii', 'ignore'))
                 if text:
                     self.notified.emit(text)
-            elif code == 52 and self._osc['osc_clipboard']:
-                self._osc_clipboard(params)
+            elif code == 52:
+                if params.rstrip().endswith(b'?'):
+                    self._osc_clipboard_read()      # READ query: gated per tab
+                elif self._osc['osc_clipboard']:
+                    self._osc_clipboard(params)     # WRITE
             elif code == 7 and self._osc['osc_cwd']:
                 self._osc_cwd(params)
             elif code in (4, 10, 11, 12) and self._osc['osc_colors']:
@@ -1466,11 +1477,44 @@ class SecureTerminal(QPlainTextEdit):
         # changes cannot force one full re-render per change.
         self._fmt_cache.clear()
 
+    def _osc_clipboard_read(self):
+        """OSC 52 READ query. Answering exfiltrates the clipboard (which may hold
+        passwords or keys) onto the program's input, so it is gated TWICE: the
+        osc_clipboard_read feature must be on, AND the tab must have been GRANTED
+        clipboard-read by the user, asked ONCE PER TAB. An un-granted tab only
+        raises the ask dialog; it NEVER replies -- so untrusted output in an
+        un-approved tab can never exfiltrate the clipboard."""
+        if not self._osc.get('osc_clipboard_read'):
+            return
+        if self._clipboard_read is True:
+            self._reply_clipboard()                 # already approved for this tab
+        elif self._clipboard_read is None:
+            self._clipboard_read = 'pending'        # ask once; ignore repeats
+            self.clipboard_read_requested.emit()
+        # 'pending' (dialog open) or False (denied) -> no reply
+
+    def grant_clipboard_read(self, allow):
+        """Record the user's once-per-tab clipboard-read decision (from the dialog)."""
+        self._clipboard_read = bool(allow)
+
+    def _reply_clipboard(self):
+        """Write the clipboard back as an OSC 52 reply -- rate-limited (so a granted
+        tab cannot be flood-exfiltrated) and size-capped. The payload is base64, so
+        it carries no newline or control byte into the program's input."""
+        now = time.monotonic()
+        if now - self._last_clip_read < 1.0:
+            return
+        self._last_clip_read = now
+        board = QGuiApplication.clipboard()
+        if board is None:
+            return
+        raw = (board.text() or '').encode('utf-8', 'replace')[:_OSC_CLIP_MAX]
+        self._write(b'\x1b]52;c;' + base64.b64encode(raw) + b'\x07')
+
     def _osc_clipboard(self, params):
-        """OSC 52: <selection>;<base64|'?'>. WRITE only; a read query ('?') is
-        DECLINED -- answering would exfiltrate your clipboard to the program AND
-        write onto its input. The decoded text is stripped of control/escape bytes
-        before it reaches the clipboard, and bounded in size."""
+        """OSC 52 WRITE: <selection>;<base64>. The decoded text is stripped of
+        control/escape bytes before it reaches the clipboard, and bounded in size.
+        (A read query is handled separately in _handle_osc, gated per tab.)"""
         parts = params.split(b';', 1)
         if len(parts) != 2:
             return

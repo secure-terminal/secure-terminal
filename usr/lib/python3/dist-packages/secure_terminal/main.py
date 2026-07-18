@@ -374,6 +374,8 @@ class MainWindow(QMainWindow):
             lambda title, t=term: self._on_tab_title(t, title))
         term.notified.connect(self._on_notify)
         term.cwd_changed.connect(lambda path, t=term: self._on_cwd_changed(t, path))
+        term.clipboard_read_requested.connect(
+            lambda t=term: self._on_clipboard_read_requested(t))
         term.advise_signal.connect(lambda msg, t=term: self._on_advise(t, msg))
         term.osc_used.connect(lambda key, t=term: self._on_osc_used(t, key))
         index = self.tabs.addTab(term, term.cwd_basename() or 'shell')
@@ -1351,6 +1353,58 @@ class MainWindow(QMainWindow):
         index = self.tabs.indexOf(term)
         if index != -1:
             self.tabs.setTabToolTip(index, path)
+
+    def _on_clipboard_read_requested(self, term):
+        """A program in `term` asked to READ the clipboard (OSC 52). Ask the user
+        ONCE for this tab; the Allow button is disabled for the paste delay so a
+        stray Enter cannot wave it through, and the default button is Deny. The
+        decision is recorded on the tab (grant_clipboard_read)."""
+        index = self.tabs.indexOf(term)
+        name = self._user_titles.get(term) or (
+            self.tabs.tabText(index) if index != -1 else 'this tab')
+        name = name.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Clipboard read request')
+        layout = QVBoxLayout(dialog)
+        msg = QLabel(
+            'A program in <b>%s</b> is asking to READ your system clipboard '
+            '(OSC&nbsp;52).<br><br>Your clipboard may hold passwords, keys or other '
+            'secrets, and the contents would be sent to that program. Allow '
+            'clipboard reads for <b>this tab</b> for the rest of its life?<br><br>'
+            'Only allow if you trust everything running in this tab: any output '
+            'here, including a log you merely view, could then read your clipboard.'
+            % name)
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setWordWrap(True)
+        layout.addWidget(msg)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        deny = QPushButton('Deny')
+        deny.setDefault(True)                 # the safe default
+        deny.clicked.connect(dialog.reject)
+        buttons.addWidget(deny)
+        allow = QPushButton()
+        allow.setEnabled(False)
+        allow.clicked.connect(dialog.accept)
+        buttons.addWidget(allow)
+        layout.addLayout(buttons)
+        secs = max(1, int(self._paste_delay))
+        state = {'left': secs}
+
+        def _tick():
+            state['left'] -= 1
+            if state['left'] <= 0:
+                allow.setText('Allow for this tab')
+                allow.setEnabled(True)
+                countdown.stop()
+            else:
+                allow.setText('Allow for this tab (%d)' % state['left'])
+        allow.setText('Allow for this tab (%d)' % secs)
+        countdown = QTimer(dialog)
+        countdown.timeout.connect(_tick)
+        countdown.start(1000)
+        granted = dialog.exec() == QDialog.DialogCode.Accepted
+        term.grant_clipboard_read(granted)
 
     def set_scrollback(self, lines):
         self._scrollback = int(lines)

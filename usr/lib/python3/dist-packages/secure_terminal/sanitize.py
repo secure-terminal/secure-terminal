@@ -225,10 +225,16 @@ OSC_FEATURES = (
      'Untrusted output can present a link whose visible text differs from where '
      'it really points (phishing). When enabled, the true target is surfaced next '
      'to the text so you can see where a link really goes.'),
-    ('osc_clipboard', 'System clipboard', '52', False, 'high',
+    ('osc_clipboard', 'System clipboard (write)', '52', False, 'high',
      'Untrusted output could silently overwrite your system clipboard, so a later '
-     'paste inserts text you did not copy, or read your clipboard back to itself. '
-     'The most dangerous terminal escape.'),
+     'paste inserts text you did not copy. Write only; reading is a separate '
+     'setting.'),
+    ('osc_clipboard_read', 'System clipboard (read)', '52', False, 'high',
+     'Let a program READ your system clipboard (OSC 52 query) -- for remote '
+     'paste-over-ssh. HIGH RISK: your clipboard may hold passwords or keys, and '
+     'the reply is written onto the program\'s input. To contain it, the terminal '
+     'asks ONCE PER TAB before allowing any read, so untrusted output in an '
+     'un-approved tab can never exfiltrate your clipboard.'),
     ('osc_colors', 'Palette / colours', '4, 10, 11, 12', False, 'medium',
      'Untrusted output can change the terminal colours -- for example paint text '
      'the same colour as the background to hide it, or leave your palette altered '
