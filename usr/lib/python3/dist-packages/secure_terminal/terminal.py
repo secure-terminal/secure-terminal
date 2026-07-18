@@ -131,10 +131,13 @@ _OSC_TERMINATED = re.compile(rb'\x07|\x1b\\')
 _OSC8 = re.compile(rb'\x1b\]8;[^;\x07\x1b]*;([^\x07\x1b]*)(?:\x07|\x1b\\)'
                    rb'(.*?)\x1b\]8;;(?:\x07|\x1b\\)', re.DOTALL)
 # OSC numeric code -> feature key, so a CLI-mode notice can name the exact type.
+# FIRST feature wins a shared code: osc_colors and osc_color_query both list
+# 4/10/11 (set vs the '?' query), but the CLI notice sees only the code, so it
+# names the colour feature (osc_colors, defined first), not the query reply.
 _OSC_CODE_KEY = {}
 for _k, _lbl, _codes, *_rest in OSC_FEATURES:
     for _c in _codes.replace(' ', '').split(','):
-        _OSC_CODE_KEY[int(_c)] = _k
+        _OSC_CODE_KEY.setdefault(int(_c), _k)
 # OSC code embedded in text (str, in the CLI display path).
 _OSC_CODE_RE = re.compile(r'\x1b\](\d+)')
 
@@ -456,6 +459,7 @@ class SecureTerminal(QPlainTextEdit):
         # synchronized output (DECSET 2026): while True, hold the paint (pyte is
         # still fed) so a frame is shown whole. Watchdog bounds an unclosed update.
         self._sync_update = False
+        self._sync_scan_carry = ''    # tail kept so a split ?2026 marker is seen
         self._sync_timer = QTimer(self)
         self._sync_timer.setSingleShot(True)
         self._sync_timer.timeout.connect(self._end_sync_update)
@@ -1192,15 +1196,21 @@ class SecureTerminal(QPlainTextEdit):
             if not self._alt_screen:
                 self._tui_hint_shown = False   # a later full-screen app re-advises
 
-        # Synchronized output (DECSET 2026): enter/leave the paint-hold, resolved by
-        # the LAST marker in the chunk. pyte is still fed below; only the paint is
-        # deferred, so a program's frame is shown whole.
-        if _SYNC_BEGIN in text or _SYNC_END in text:
-            if text.rfind(_SYNC_BEGIN) > text.rfind(_SYNC_END):
-                self._sync_update = True
-                self._sync_timer.start(150)    # bound an update that never closes
+        # Synchronized output (DECSET 2026): resolve the LAST marker, carrying the
+        # tail so a marker split across reads is still seen. Apply BEGIN now (drop a
+        # pending partial paint, take the hold); defer END until AFTER pyte is fed
+        # the closing chunk, so _end_sync_update paints the COMPLETED frame.
+        probe = self._sync_scan_carry + text
+        self._sync_scan_carry = text[-(len(_SYNC_BEGIN) - 1):]
+        sync_end = False
+        if _SYNC_BEGIN in probe or _SYNC_END in probe:
+            if probe.rfind(_SYNC_BEGIN) > probe.rfind(_SYNC_END):
+                if not self._sync_update:      # ENTER only: a repeat never re-arms
+                    self._sync_update = True
+                    self._render_timer.stop()  # drop a pending partial paint
+                    self._sync_timer.start(150)   # bound an update that never closes
             else:
-                self._end_sync_update()
+                sync_end = True
 
         # Feed pyte ONLY in TUI mode -- never in the safe CLI mode, so the escape
         # interpreter is kept out of the default path. On CLI->TUI the screen is
@@ -1211,6 +1221,8 @@ class SecureTerminal(QPlainTextEdit):
             if self._screen is None:
                 self._make_screen()
             self._feed_stream(data)
+        if sync_end:
+            self._end_sync_update()            # closing chunk fed -> paint the frame
 
         # OSC side-effects (title, notify, clipboard, colours, cwd, iTerm2) are a
         # TUI-mode feature, each honored only when the user enabled it.
@@ -1403,19 +1415,6 @@ class SecureTerminal(QPlainTextEdit):
             elif code == 1337 and self._osc['osc_iterm2']:
                 self._osc_iterm2(params)
 
-    def _in_raw_mode(self):
-        """True if the pty line discipline is in RAW mode (ICANON off) -- a
-        full-screen program is reading input directly, so a query reply is consumed
-        by it, not injected onto a cooked-mode shell command line (the reflection-
-        oracle vector). This is the gate that lets us answer a colour query safely."""
-        if self._fd is None:
-            return False
-        try:
-            attr = termios.tcgetattr(self._fd)
-        except (termios.error, OSError):
-            return False
-        return not (attr[3] & termios.ICANON)     # attr[3] == lflag
-
     def _osc_color_value(self, code, params):
         """The terminal's OWN colour for an OSC 4/10/11 query, as an xterm
         'rgb:RRRR/GGGG/BBBB' string, or None. Non-secret (our theme/palette)."""
@@ -1443,10 +1442,14 @@ class SecureTerminal(QPlainTextEdit):
     def _osc_color_query(self, code, params):
         """Answer an OSC 4/10/11 colour QUERY (';?') with the terminal's own colour
         -- the ONE write-back to the pty we allow, and only when BOTH: the user
-        enabled osc_color_query AND the pty is in raw mode (so the reply is consumed
-        by the running program, never injected at a shell prompt). The reply is the
+        enabled osc_color_query AND a full-screen program owns the ALTERNATE SCREEN.
+        Alt-screen (not raw mode) is the gate: a bash/zsh readline prompt also runs
+        the pty non-canonical, so ICANON-off does NOT prove a full-screen program is
+        consuming the reply -- but the alternate screen is never held by a shell
+        prompt, so a reply there is consumed by the running program, never injected
+        onto a command line (the reflection-oracle vector). The reply is the
         terminal's non-secret colour and carries no attacker-influenced content."""
-        if not self._osc.get('osc_color_query') or not self._in_raw_mode():
+        if not self._osc.get('osc_color_query') or not self._alt_screen:
             return
         value = self._osc_color_value(code, params)
         if value is None:
