@@ -408,6 +408,10 @@ class SecureTerminal(QPlainTextEdit):
         # not yet asked, 'pending' = the dialog is open, True/False = the user's
         # answer. Rate-limited so a granted tab cannot be flood-exfiltrated.
         self._clipboard_read = None
+        # global "always allow clipboard read" default (from settings): auto-answers
+        # a tab that has made no explicit decision. An explicit per-tab decision
+        # (True/False) always wins over this global default.
+        self._clipboard_read_always = False
         self._last_clip_read = 0.0
         self._seeding = False         # True while replaying _raw into pyte (no bell)
         self._last_title = ''
@@ -1497,21 +1501,47 @@ class SecureTerminal(QPlainTextEdit):
         if not self._osc.get('osc_clipboard_read'):
             return
         if self._clipboard_read is True:
-            self._reply_clipboard()                 # already approved for this tab
+            self._reply_clipboard()                 # explicitly approved for this tab
+        elif self._clipboard_read is False:
+            return                                  # explicitly denied for this tab
         elif self._clipboard_read is None:
-            self._clipboard_read = 'pending'        # ask once; ignore repeats
-            self.clipboard_read_requested.emit()
-        # 'pending' (dialog open) or False (denied) -> no reply
+            if self._clipboard_read_always:
+                self._reply_clipboard()             # global always-allow, no prompt
+            else:
+                self._clipboard_read = 'pending'    # ask once; ignore repeats
+                self.clipboard_read_requested.emit()
+        # 'pending' (dialog open) -> no reply
 
-    def grant_clipboard_read(self, allow):
-        """Record the user's once-per-tab clipboard-read decision (from the dialog).
-        When the tab is APPROVED, answer the query that opened the dialog now -- it
-        was consumed when the prompt went up, so a one-shot client would otherwise
-        wait forever for a reply."""
+    # the clipboard-read decisions the dialog can return
+    CLIP_ALLOW_ONCE = 'allow_once'
+    CLIP_ALLOW_ALWAYS = 'allow_always'
+    CLIP_DENY_ONCE = 'deny_once'
+    CLIP_DENY_ALWAYS = 'deny_always'
+
+    def grant_clipboard_read(self, decision):
+        """Record the user's clipboard-read decision from the dialog. Four choices:
+        allow/deny, each ONCE (this request only, re-ask next time) or ALWAYS
+        (remembered for the tab's life). A bool is accepted for compatibility
+        (True -> allow-always, False -> deny-always). When the answer allows, reply
+        to the query that opened the dialog now -- it was consumed when the prompt
+        went up, so a one-shot client would otherwise wait forever."""
+        if decision is True:
+            decision = self.CLIP_ALLOW_ALWAYS
+        elif decision is False:
+            decision = self.CLIP_DENY_ALWAYS
         was_pending = self._clipboard_read == 'pending'
-        self._clipboard_read = bool(allow)
+        allow = decision in (self.CLIP_ALLOW_ONCE, self.CLIP_ALLOW_ALWAYS)
+        remember = decision in (self.CLIP_ALLOW_ALWAYS, self.CLIP_DENY_ALWAYS)
+        # remember -> persist the tab decision; once -> reset to None so the next
+        # request asks again.
+        self._clipboard_read = allow if remember else None
         if allow and was_pending:
             self._reply_clipboard()
+
+    def set_clipboard_read_always(self, on):
+        """Apply the global 'always allow clipboard read' default to this tab. Does
+        not override an explicit per-tab decision already made."""
+        self._clipboard_read_always = bool(on)
 
     def _reply_clipboard(self):
         """Write the clipboard back as an OSC 52 reply -- rate-limited (so a granted

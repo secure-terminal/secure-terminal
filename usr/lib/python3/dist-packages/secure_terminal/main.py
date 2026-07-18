@@ -263,6 +263,11 @@ class MainWindow(QMainWindow):
         # notice): a set of feature keys, comma-separated in config.
         self._osc_notice_off = set(
             k.strip() for k in cfg.get('osc_notice_off', '').split(',') if k.strip())
+        # global "always allow clipboard read": auto-answers OSC 52 read in any tab
+        # that has made no explicit decision, WITHOUT prompting. Off by default and
+        # security-relevant (any untrusted output could then exfiltrate the
+        # clipboard), so it is opt-in and lockable like the other high-risk toggles.
+        self._osc_clipboard_read_always = cfg.get('osc_clipboard_read_always') == 'true'
         # bell (BEL 0x07) policy: off (default, silent), audible (system beep) or
         # visual (window/taskbar urgency flash). BEL from untrusted output is a
         # nuisance surface, so silence is the safe default.
@@ -1243,6 +1248,18 @@ class MainWindow(QMainWindow):
     def _apply_osc_defaults(self, term):
         for key, enabled in self._osc_defaults.items():
             term.apply_osc(key, enabled)
+        term.set_clipboard_read_always(self._osc_clipboard_read_always)
+
+    def set_clipboard_read_always(self, on):
+        """Global 'always allow clipboard read' default. Applies to every tab (an
+        explicit per-tab decision still wins) and to new tabs."""
+        if 'osc_clipboard_read_always' in self._locked:
+            return
+        self._osc_clipboard_read_always = bool(on)
+        self.act_clip_read_always.setChecked(bool(on))
+        for i in range(self.tabs.count()):
+            self.tabs.widget(i).set_clipboard_read_always(bool(on))
+        self._persist()
 
     def set_osc(self, key, enabled):
         """Enable/disable one OSC feature: apply it to the current tab, remember it
@@ -1446,9 +1463,10 @@ class MainWindow(QMainWindow):
 
     def _on_clipboard_read_requested(self, term):
         """A program in `term` asked to READ the clipboard (OSC 52). Ask the user
-        ONCE for this tab; the Allow button is disabled for the paste delay so a
-        stray Enter cannot wave it through, and the default button is Deny. The
-        decision is recorded on the tab (grant_clipboard_read)."""
+        for this tab; the two Allow buttons are disabled for the paste delay so a
+        stray Enter cannot wave them through, and the default is Deny-once. Four
+        choices -- allow or deny, ONCE (this request) or ALWAYS (remembered for the
+        tab). Closing the dialog denies once. The choice is recorded on the tab."""
         index = self.tabs.indexOf(term)
         name = self._user_titles.get(term) or (
             self.tabs.tabText(index) if index != -1 else 'this tab')
@@ -1459,42 +1477,62 @@ class MainWindow(QMainWindow):
         msg = QLabel(
             'A program in <b>%s</b> is asking to READ your system clipboard '
             '(OSC&nbsp;52).<br><br>Your clipboard may hold passwords, keys or other '
-            'secrets, and the contents would be sent to that program. Allow '
-            'clipboard reads for <b>this tab</b> for the rest of its life?<br><br>'
-            'Only allow if you trust everything running in this tab: any output '
-            'here, including a log you merely view, could then read your clipboard.'
-            % name)
+            'secrets, and the contents would be sent to that program.<br><br>'
+            '<b>Once</b> answers only this request; <b>Always</b> remembers your '
+            'choice for this tab. Only allow if you trust everything running here: '
+            'any output, including a log you merely view, could then read your '
+            'clipboard.' % name)
         msg.setTextFormat(Qt.TextFormat.RichText)
         msg.setWordWrap(True)
         layout.addWidget(msg)
+
+        # Closing the dialog (Esc / window close) is the safe default: deny once.
+        result = {'decision': SecureTerminal.CLIP_DENY_ONCE}
+
+        def _choose(decision):
+            result['decision'] = decision
+            dialog.accept()
+
         buttons = QHBoxLayout()
+        deny_once = QPushButton('Deny once')
+        deny_once.setDefault(True)                 # the safe default
+        deny_once.clicked.connect(lambda: _choose(SecureTerminal.CLIP_DENY_ONCE))
+        deny_always = QPushButton('Always deny (this tab)')
+        deny_always.clicked.connect(lambda: _choose(SecureTerminal.CLIP_DENY_ALWAYS))
+        buttons.addWidget(deny_once)
+        buttons.addWidget(deny_always)
         buttons.addStretch(1)
-        deny = QPushButton('Deny')
-        deny.setDefault(True)                 # the safe default
-        deny.clicked.connect(dialog.reject)
-        buttons.addWidget(deny)
-        allow = QPushButton()
-        allow.setEnabled(False)
-        allow.clicked.connect(dialog.accept)
-        buttons.addWidget(allow)
+        allow_once = QPushButton()
+        allow_once.setEnabled(False)
+        allow_once.clicked.connect(lambda: _choose(SecureTerminal.CLIP_ALLOW_ONCE))
+        allow_always = QPushButton()
+        allow_always.setEnabled(False)
+        allow_always.clicked.connect(lambda: _choose(SecureTerminal.CLIP_ALLOW_ALWAYS))
+        buttons.addWidget(allow_once)
+        buttons.addWidget(allow_always)
         layout.addLayout(buttons)
+
         secs = max(1, int(self._paste_delay))
         state = {'left': secs}
+
+        def _sync():
+            suffix = '' if state['left'] <= 0 else ' (%d)' % state['left']
+            allow_once.setText('Allow once' + suffix)
+            allow_always.setText('Always allow (this tab)' + suffix)
 
         def _tick():
             state['left'] -= 1
             if state['left'] <= 0:
-                allow.setText('Allow for this tab')
-                allow.setEnabled(True)
+                allow_once.setEnabled(True)
+                allow_always.setEnabled(True)
                 countdown.stop()
-            else:
-                allow.setText('Allow for this tab (%d)' % state['left'])
-        allow.setText('Allow for this tab (%d)' % secs)
+            _sync()
+        _sync()
         countdown = QTimer(dialog)
         countdown.timeout.connect(_tick)
         countdown.start(1000)
-        granted = dialog.exec() == QDialog.DialogCode.Accepted
-        term.grant_clipboard_read(granted)
+        dialog.exec()
+        term.grant_clipboard_read(result['decision'])
 
     def set_scrollback(self, lines):
         self._scrollback = int(lines)
@@ -1537,6 +1575,7 @@ class MainWindow(QMainWindow):
             ('colored_markings', [self.act_markings]),
             ('auto_tab_colors', [self.act_auto_tab_colors]),
             ('osc_notice', [self.act_osc_notice]),
+            ('osc_clipboard_read_always', [self.act_clip_read_always]),
             ('tui', [self.act_tui]),
             ('cli_terminfo', [self.act_cli_terminfo]),
             ('allow_title', [self.act_title]),
@@ -1591,6 +1630,8 @@ class MainWindow(QMainWindow):
             'keybindings': ' '.join('%s=%s' % (i, self._keybindings[i])
                                     for i in sorted(self._keybindings)),
             'osc_notice': 'true' if self._osc_notice else 'false',
+            'osc_clipboard_read_always': ('true' if self._osc_clipboard_read_always
+                                          else 'false'),
             'osc_notice_off': ','.join(sorted(self._osc_notice_off)),
             'persist_session': 'true' if self._persist_session else 'false',
             **{k: 'true' if v else 'false' for k, v in self._osc_defaults.items()},
@@ -1912,6 +1953,18 @@ class MainWindow(QMainWindow):
             act.toggled.connect(lambda on, k=key: self.set_osc(k, on))
             osc_menu.addAction(act)
             self._osc_actions[key] = act
+        osc_menu.addSeparator()
+        self.act_clip_read_always = QAction(
+            'Always allow clipboard READ (all tabs, no prompt)', self, checkable=True)
+        self.act_clip_read_always.setChecked(self._osc_clipboard_read_always)
+        self.act_clip_read_always.setToolTip(
+            'Auto-answer OSC 52 clipboard-read requests in every tab WITHOUT the '
+            'once-per-tab prompt. HIGH RISK: any untrusted output could then read '
+            'your clipboard (passwords, keys). Off by default; only has effect where '
+            'the "System clipboard (read)" OSC feature is also enabled. A per-tab '
+            'Deny still wins over this.')
+        self.act_clip_read_always.toggled.connect(self.set_clipboard_read_always)
+        osc_menu.addAction(self.act_clip_read_always)
 
         view_menu.addSeparator()
         sb_menu = view_menu.addMenu('&Scrollback')
