@@ -685,10 +685,29 @@ def classify_paste(text):
     return [(label, counts[label]) for label in order if label in counts]
 
 
+def color_256(idx):
+    """xterm 256-colour index -> the value parse_sgr stores: 0-15 stay a palette
+    INDEX (int, rendered via ANSI_PALETTE + bold); 16-231 the 6x6x6 colour cube and
+    232-255 the greyscale ramp become an explicit '#rrggbb' string. None if out of
+    range."""
+    if not 0 <= idx <= 255:
+        return None
+    if idx < 16:
+        return idx
+    if idx < 232:
+        idx -= 16
+        level = (0, 95, 135, 175, 215, 255)
+        return '#%02x%02x%02x' % (level[idx // 36], level[(idx // 6) % 6],
+                                  level[idx % 6])
+    grey = 8 + (idx - 232) * 10
+    return '#%02x%02x%02x' % (grey, grey, grey)
+
+
 def parse_sgr(param_str, state):
     """Fold one SGR parameter string into `state` -- a dict with keys 'fg', 'bg'
-    (palette index or None) and 'bold' (bool). Pure so the colour logic can be
-    tested without Qt; terminal.py turns the resulting state into a format."""
+    (a 16-colour palette index int, a '#rrggbb' string for 256-colour / truecolor,
+    or None) and 'bold' (bool). Pure so the colour logic can be tested without Qt;
+    terminal.py turns the resulting state into a format."""
     nums = [int(p) if p.isdigit() else 0
             for p in (param_str.split(';') if param_str else ['0'])]
     i = 0
@@ -714,11 +733,21 @@ def parse_sgr(param_str, state):
         elif n == 49:
             state['bg'] = None
         elif n in (38, 48):
-            # 8-bit (5;n) and 24-bit (2;r;g;b): consume the extra parameters and
-            # fall back to the default (not part of the safe set).
+            # 8-bit (5;n) and 24-bit (2;r;g;b) colour: resolve to a stored value.
+            # Colour is passive (a contrast guard keeps text readable), so it is
+            # safe to honour the full range rather than dropping it.
+            colour = None
             if i + 1 < len(nums) and nums[i + 1] == 5:
+                if i + 2 < len(nums):
+                    colour = color_256(nums[i + 2])
                 i += 2
             elif i + 1 < len(nums) and nums[i + 1] == 2:
+                if i + 4 < len(nums):
+                    colour = '#%02x%02x%02x' % (nums[i + 2] & 0xff,
+                                                nums[i + 3] & 0xff,
+                                                nums[i + 4] & 0xff)
                 i += 4
+            if colour is not None:
+                state['fg' if n == 38 else 'bg'] = colour
         i += 1
     return state

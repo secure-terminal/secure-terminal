@@ -1030,6 +1030,16 @@ class SecureTerminal(QPlainTextEdit):
         # palette indexes (or None for default) + bold; folded by parse_sgr.
         self._sgr = {'fg': None, 'bg': None, 'bold': False}
 
+    def _sgr_qcolor(self, val, default):
+        """A parse_sgr colour value -> QColor: a 16-colour palette INDEX (int,
+        honouring an OSC 4 override), a '#rrggbb' 256-colour / truecolor string, or
+        None -> the default (or None)."""
+        if val is None:
+            return QColor(default) if default is not None else None
+        if isinstance(val, int):
+            return QColor(self._osc_palette.get(val, ANSI_PALETTE[val]))
+        return QColor(val)                # '#rrggbb' from color_256 / truecolor
+
     def _format_for(self, state):
         """Build the QTextCharFormat for an SGR state dict, guarding against an
         unreadable foreground/background combination."""
@@ -1038,8 +1048,8 @@ class SecureTerminal(QPlainTextEdit):
         if fg_i is None and bg_i is None and not bold:
             return fmt
         base_bg, base_fg = THEMES.get(self._theme, THEMES['dark'])
-        fg = QColor(ANSI_PALETTE[fg_i]) if fg_i is not None else QColor(base_fg)
-        bg = QColor(ANSI_PALETTE[bg_i]) if bg_i is not None else None
+        fg = self._sgr_qcolor(fg_i, base_fg)
+        bg = self._sgr_qcolor(bg_i, None)
         eff_bg = bg if bg is not None else QColor(base_bg)
         if too_close(_rgb(fg), _rgb(eff_bg)):
             fg = QColor(base_fg)          # never let the text vanish
@@ -1128,12 +1138,16 @@ class SecureTerminal(QPlainTextEdit):
             # the host emulator's identity/version or a correlatable session id.
             # LINES/COLUMNS are dropped too: the real size comes from TIOCSWINSZ,
             # and a stale value here would mislead programs.
-            for _var in ('TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'COLORTERM',
+            for _var in ('TERM_PROGRAM', 'TERM_PROGRAM_VERSION',
                          'VTE_VERSION', 'KONSOLE_VERSION', 'KONSOLE_DBUS_SERVICE',
                          'KONSOLE_DBUS_SESSION', 'WT_SESSION', 'WT_PROFILE_ID',
                          'ITERM_SESSION_ID', 'ITERM_PROFILE', 'KITTY_WINDOW_ID',
                          'KITTY_PID', 'ALACRITTY_WINDOW_ID', 'LINES', 'COLUMNS'):
                 os.environ.pop(_var, None)
+            # We render 24-bit colour faithfully (with a contrast guard) in both
+            # modes, so advertise it -- a fixed value, not inherited, so it is not a
+            # fingerprint. Programs then emit truecolor instead of down-mapping.
+            os.environ['COLORTERM'] = 'truecolor'
             os.environ.setdefault('PAGER', 'cat')
             # `command` is an optional program to run: a list is used verbatim as
             # argv (the "-- prog args" CLI form, no shell reparse), a string is
