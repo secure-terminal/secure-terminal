@@ -524,28 +524,48 @@ class MainWindow(QMainWindow):
         self._apply_osc_defaults(term)
         self._add_tab(term)
 
+    def _osc_locked(self, feat):
+        """An OSC feature is admin-locked directly by its own key, or (for the title
+        / notify pair) via the legacy allow_title lock."""
+        return feat in self._locked or (
+            feat in ('osc_title', 'osc_notify') and 'allow_title' in self._locked)
+
     def _open_launch_tab(self, spec):
-        """Open a tab from a parsed launch spec (--title/--tui/--mode/command).
-        Admin locks still win: a locked mode or TUI setting is NOT overridable
-        from the command line."""
+        """Open a tab from a parsed launch spec. Besides --title/--tui/--mode/command,
+        a tab may override the window defaults for colours, cli-terminfo, bell and
+        individual OSC features. Admin locks still win: a locked setting is NEVER
+        overridable from the command line."""
+        def _tab(key, default):
+            val = spec.get(key)
+            return default if val is None or key in self._locked else val
+
         tui = self._default_tui if (spec.get('tui') is None
                                     or 'tui' in self._locked) else spec['tui']
+        cli_terminfo = _tab('cli_terminfo', self._default_cli_terminfo)
         term = SecureTerminal(tui=tui, command=spec.get('command') or None,
-                              cli_terminfo=self._default_cli_terminfo)
+                              cli_terminfo=cli_terminfo)
         term.apply_theme(self._default_theme)
         term.apply_zoom(self._default_zoom)
         mode = spec.get('mode')
         if mode not in DISPLAY_MODES or 'unicode_mode' in self._locked:
             mode = self._default_mode
         term.apply_mode(mode)
-        term.apply_colors(self._default_colors)
+        term.apply_colors(_tab('colors', self._default_colors))
         term.apply_markings(self._default_markings)
         term.apply_scrollback(self._scrollback)
         term.apply_paste_delay(self._paste_delay)
-        term.apply_bell(self._default_bell)
+        bell = self._default_bell
+        if spec.get('bell') is not None and 'bell' not in self._locked:
+            bell = SecureTerminal._parse_bell(spec['bell'])
+        term.apply_bell(bell)
         term.apply_bell_sound(self._default_bell_sound)
         self._connect_bell_tray(term)
         self._apply_osc_defaults(term)
+        # per-tab OSC feature overrides: enable each named, valid, unlocked feature.
+        valid = {feature[0] for feature in OSC_FEATURES}
+        for feat in (spec.get('osc') or []):
+            if feat in valid and not self._osc_locked(feat):
+                term.apply_osc(feat, True)
         self._add_tab(term)
         if spec.get('title'):
             self._user_titles[term] = spec['title']
@@ -2732,6 +2752,22 @@ def _launch_parser(with_globals):
                    help='initial unicode display mode')
     p.add_argument('-e', '--command', dest='cmd_string', metavar='STRING',
                    help='run STRING (shell-split, no shell); prefer -- for a real argv')
+    # per-tab overrides of the window defaults (an admin lock still wins). Each
+    # defaults to None -> use the window default.
+    p.add_argument('--colors', action='store_true', default=None,
+                   help='enable ANSI colours for this tab')
+    p.add_argument('--no-colors', dest='colors', action='store_false',
+                   help='disable ANSI colours for this tab')
+    p.add_argument('--cli-terminfo', dest='cli_terminfo', action='store_true',
+                   default=None,
+                   help='advertise the restricted terminfo for this tab')
+    p.add_argument('--no-cli-terminfo', dest='cli_terminfo', action='store_false',
+                   help='advertise xterm-256color for this tab')
+    p.add_argument('--bell', metavar='CHANNELS',
+                   help='bell channels for this tab, e.g. "audible,visual" (empty = silent)')
+    p.add_argument('--osc', dest='osc', metavar='FEATURE', action='append',
+                   help='enable an OSC feature for this tab (repeatable), e.g. '
+                        '--osc osc_clipboard_read --osc osc_title')
     return p
 
 
@@ -2768,13 +2804,16 @@ def _parse_launch_args(argv):
             namespace = parser.parse_args(group)
         launch.tabs.append({
             'title': namespace.title, 'tui': namespace.tui,
-            'mode': namespace.mode, 'command': namespace.cmd_string})
+            'mode': namespace.mode, 'command': namespace.cmd_string,
+            'colors': namespace.colors, 'cli_terminfo': namespace.cli_terminfo,
+            'bell': namespace.bell, 'osc': namespace.osc})
     if command is not None:
         launch.tabs[-1]['command'] = command
 
     def _empty(spec):
-        return not any(spec[k] is not None
-                       for k in ('title', 'tui', 'mode', 'command'))
+        return not any(spec.get(k) is not None
+                       for k in ('title', 'tui', 'mode', 'command',
+                                 'colors', 'cli_terminfo', 'bell', 'osc'))
 
     # A leading '--tab' means the first tab IS that group; drop the empty
     # placeholder for tokens before it (its globals were already read).
@@ -2796,11 +2835,17 @@ def _sanitize_tab_spec(spec):
     """Type-validate a tab spec received over IPC (owner-only, but defensive)."""
     title, tui = spec.get('title'), spec.get('tui')
     mode, command = spec.get('mode'), spec.get('command')
+    colors, cli_terminfo = spec.get('colors'), spec.get('cli_terminfo')
+    bell, osc = spec.get('bell'), spec.get('osc')
     return {
         'title': title if isinstance(title, str) else None,
         'tui': tui if isinstance(tui, bool) else None,
         'mode': mode if mode in DISPLAY_MODES else None,
         'command': command if isinstance(command, (str, list)) else None,
+        'colors': colors if isinstance(colors, bool) else None,
+        'cli_terminfo': cli_terminfo if isinstance(cli_terminfo, bool) else None,
+        'bell': bell if isinstance(bell, str) else None,
+        'osc': [f for f in osc if isinstance(f, str)] if isinstance(osc, list) else None,
     }
 
 
