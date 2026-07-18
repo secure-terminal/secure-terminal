@@ -66,6 +66,7 @@ import os
 import pty
 import re
 import copy
+import select
 import subprocess
 import time
 import base64
@@ -1287,7 +1288,16 @@ class SecureTerminal(QPlainTextEdit):
         if '\x1b]' in text:
             emitted = set()
             for m in _OSC_CODE_RE.finditer(text):
-                key = _OSC_CODE_KEY.get(int(m.group(1)), 'osc_other')
+                code = int(m.group(1))
+                key = _OSC_CODE_KEY.get(code, 'osc_other')
+                if code == 52:
+                    # osc_clipboard (write) and osc_clipboard_read share code 52;
+                    # distinguish by the payload so the per-type notice is right.
+                    tail = text[m.end():m.end() + 512]
+                    end = min((p for p in (tail.find('\x07'), tail.find('\x1b'))
+                               if p >= 0), default=len(tail))
+                    key = ('osc_clipboard_read' if tail[:end].rstrip().endswith('?')
+                           else 'osc_clipboard')
                 if key not in emitted:
                     emitted.add(key)
                     self.osc_used.emit(key)
@@ -1494,8 +1504,14 @@ class SecureTerminal(QPlainTextEdit):
         # 'pending' (dialog open) or False (denied) -> no reply
 
     def grant_clipboard_read(self, allow):
-        """Record the user's once-per-tab clipboard-read decision (from the dialog)."""
+        """Record the user's once-per-tab clipboard-read decision (from the dialog).
+        When the tab is APPROVED, answer the query that opened the dialog now -- it
+        was consumed when the prompt went up, so a one-shot client would otherwise
+        wait forever for a reply."""
+        was_pending = self._clipboard_read == 'pending'
         self._clipboard_read = bool(allow)
+        if allow and was_pending:
+            self._reply_clipboard()
 
     def _reply_clipboard(self):
         """Write the clipboard back as an OSC 52 reply -- rate-limited (so a granted
@@ -1509,6 +1525,8 @@ class SecureTerminal(QPlainTextEdit):
         if board is None:
             return
         raw = (board.text() or '').encode('utf-8', 'replace')[:_OSC_CLIP_MAX]
+        # _write handles the whole (~87 KiB) reply incl. partial writes, so the
+        # client never sees a truncated, unterminated OSC sequence.
         self._write(b'\x1b]52;c;' + base64.b64encode(raw) + b'\x07')
 
     def _osc_clipboard(self, params):
@@ -1694,12 +1712,25 @@ class SecureTerminal(QPlainTextEdit):
         return data
 
     def _write(self, data):
+        """Write ALL of `data` to the pty. The single point where anything reaches
+        the child's input (keystrokes, paste, the one gated clipboard reply), so it
+        is the choke point the reflection-oracle test spies. Retries a partial write
+        / EAGAIN on the non-blocking fd (a large clipboard reply is ~87 KiB, more
+        than one os.write may accept), bounded so a program that never drains its
+        input cannot hang us."""
         if self._fd is None:
             return
-        try:
-            os.write(self._fd, data)
-        except OSError:
-            pass            # child gone / pty closed -> input is dropped
+        view = memoryview(data if isinstance(data, (bytes, bytearray)) else bytes(data))
+        deadline = time.monotonic() + 2.0
+        while view:
+            try:
+                view = view[os.write(self._fd, view):]
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    return
+                select.select([], [self._fd], [], 0.05)
+            except OSError:
+                return          # child gone / pty closed -> input is dropped
 
     # -- signalling the foreground program ------------------------------------
     def _foreground_pgrp(self):
