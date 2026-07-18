@@ -333,21 +333,26 @@ class MainWindow(QMainWindow):
         # double-click a tab to rename it; right-click for rename/colour/close.
         self.tabs.tabBarDoubleClicked.connect(self.rename_tab)
         bar = self.tabs.tabBar()
+        # keep the 1..N tab numbers correct after a drag-reorder
+        bar.tabMoved.connect(lambda *_: self._renumber_tabs())
         bar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         bar.customContextMenuRequested.connect(self._tab_context_menu)
         # a pointing-hand cursor over the tab bar hints that a tab is interactive
         # (double-click to rename the title, right-click for rename/colour/close).
         bar.setCursor(Qt.CursorShape.PointingHandCursor)
         bar.setToolTip('Double-click to rename this tab; right-click for more.')
-        # a dismissible advisory banner ABOVE the tabs (not injected into any
-        # terminal, so an advisory can never be copied as program output).
+        # a dismissible advisory banner BELOW the tab bar and terminal (not
+        # injected into any terminal, so an advisory can never be copied as
+        # program output). Placing it under the tabs, rather than above, keeps
+        # the tab bar at a fixed position: showing or hiding the banner no longer
+        # shifts the tab strip, so switching tabs does not make them jump.
         central = QWidget(self)
         col = QVBoxLayout(central)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
         self._banner = self._make_banner()
-        col.addWidget(self._banner)
         col.addWidget(self.tabs)
+        col.addWidget(self._banner)
         self.setCentralWidget(central)
 
         self._theme_actions = {}
@@ -426,6 +431,7 @@ class MainWindow(QMainWindow):
                 if color != prev:
                     break
             self.set_tab_color(index, QColor(color))
+        self._renumber_tabs()          # number a tab that got no auto-colour too
         self._sync_chrome_to_tab()
         term.setFocus()
         return index
@@ -799,6 +805,7 @@ class MainWindow(QMainWindow):
         self._tab_ids.pop(term, None)
         self.tabs.removeTab(index)
         term.deleteLater()
+        self._renumber_tabs()          # numbers shift left after a close
         if self.tabs.count() == 0:
             self.close()
 
@@ -845,13 +852,46 @@ class MainWindow(QMainWindow):
             return
         term = self.tabs.widget(index)
         if color is None or not color.isValid():
-            self.tabs.setTabIcon(index, QIcon())
             self._tab_colors.pop(term, None)
-            return
-        pixmap = QPixmap(12, 12)
-        pixmap.fill(color)
-        self.tabs.setTabIcon(index, QIcon(pixmap))
-        self._tab_colors[term] = color.name()
+        else:
+            self._tab_colors[term] = color.name()
+        # the colour swatch also carries the tab's number, so refresh every tab
+        # (a colour change does not move tabs, but this keeps one code path).
+        self._renumber_tabs()
+
+    def _number_icon(self, n, color):
+        """The tab's position number drawn inside its colour swatch (a neutral
+        grey dot when the tab has no colour), so tabs are quickly addressable by
+        number. Text colour follows the swatch luminance so the digit stays
+        readable. Drawn, ASCII-only, always available."""
+        pixmap = QPixmap(18, 18)
+        pixmap.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        dot = QColor(color) if color is not None else QColor('#9aa0a6')
+        painter.setBrush(QBrush(dot))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(1, 1, 16, 16, 4, 4)
+        label = str(n)
+        painter.setPen(QColor('#ffffff') if dot.lightnessF() < 0.6
+                       else QColor('#000000'))
+        font = QFont()
+        font.setPixelSize(11 if len(label) == 1 else 9)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(QRect(0, 0, 18, 18),
+                         Qt.AlignmentFlag.AlignCenter, label)
+        painter.end()
+        return QIcon(pixmap)
+
+    def _renumber_tabs(self):
+        """Redraw every tab's number swatch to match its current position, so the
+        numbers stay 1..N left to right after a tab is added, closed or moved."""
+        for i in range(self.tabs.count()):
+            term = self.tabs.widget(i)
+            cname = self._tab_colors.get(term)
+            color = QColor(cname) if cname else None
+            self.tabs.setTabIcon(i, self._number_icon(i + 1, color))
 
     def _tab_context_menu(self, point):
         index = self.tabs.tabBar().tabAt(point)
