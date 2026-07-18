@@ -66,6 +66,7 @@ import os
 import pty
 import re
 import copy
+import subprocess
 import time
 import base64
 import urllib.parse
@@ -157,6 +158,51 @@ BELL_SOUND_DIRS = (
 )
 
 
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _terminfo_source():
+    """Locate the shipped `secure-terminal.ti` terminfo source (installed tree or
+    a source checkout), or None."""
+    candidates = (
+        os.path.join(_MODULE_DIR, *(['..'] * 4),
+                     'share', 'secure-terminal', 'terminfo', 'secure-terminal.ti'),
+        '/usr/share/secure-terminal/terminfo/secure-terminal.ti',
+    )
+    for path in candidates:
+        if os.path.isfile(path):
+            return os.path.abspath(path)
+    return None
+
+
+def cli_terminfo_dir():
+    """Return a terminfo directory containing the compiled `secure-terminal` entry
+    (for the opt-in custom TERM), compiling the shipped source into the user cache
+    on demand when it is not already compiled, or None if it cannot be produced
+    (caller then falls back to xterm-256color). Pure lookup + at most one `tic`."""
+    src = _terminfo_source()
+    if src:
+        pkg_dir = os.path.dirname(src)
+        if os.path.isfile(os.path.join(pkg_dir, 's', 'secure-terminal')):
+            return pkg_dir                # compiled at build time next to the source
+    cache = os.path.join(
+        os.environ.get('XDG_CACHE_HOME') or os.path.join(
+            os.path.expanduser('~'), '.cache'),
+        'secure-terminal', 'terminfo')
+    if os.path.isfile(os.path.join(cache, 's', 'secure-terminal')):
+        return cache
+    if src:
+        try:
+            os.makedirs(cache, exist_ok=True)
+            subprocess.run(['tic', '-x', '-o', cache, src],
+                           check=True, capture_output=True, timeout=15)
+            if os.path.isfile(os.path.join(cache, 's', 'secure-terminal')):
+                return cache
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
 def sound_file_allowed(path):
     """True if `path` is a real file inside one of BELL_SOUND_DIRS (symlinks
     resolved), so a bell sound cannot escape the AppArmor-granted directories."""
@@ -244,7 +290,8 @@ class SecureTerminal(QPlainTextEdit):
     # system-tray popup (the terminal has no tray icon of its own). Carries a label.
     bell_tray = pyqtSignal(str)
 
-    def __init__(self, parent=None, command=None, tui=False, history=''):
+    def __init__(self, parent=None, command=None, tui=False, history='',
+                 cli_terminfo=False):
         super().__init__(parent)
         self.setUndoRedoEnabled(False)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
@@ -411,6 +458,10 @@ class SecureTerminal(QPlainTextEdit):
             self._raw = restored[-self._RAW_MAX:]   # so a mode toggle re-renders it too
             self._append(restored)
 
+        # opt-in: advertise the restricted `secure-terminal` terminfo instead of
+        # xterm-256color, so CLI-mode programs emit only what we render and never
+        # probe. Off by default (xterm-256color keeps ssh/TUI working).
+        self._cli_terminfo = bool(cli_terminfo)
         self._notifier = None
         self._fd = None
         self._pid = None
@@ -1022,17 +1073,30 @@ class SecureTerminal(QPlainTextEdit):
             return
         super().wheelEvent(event)
 
+    def _child_term(self):
+        """Decide the child's TERM and terminfo dir BEFORE the fork (so no tic runs
+        in the post-fork child). Default xterm-256color -- a capable, universal
+        entry so TUI mode's full-screen programs and ssh work, and safety does not
+        rest on TERM (line mode strips every escape in the renderer regardless).
+        With the opt-in cli_terminfo flag, advertise the restricted `secure-terminal`
+        entry so CLI-mode programs emit only what we render and never probe -- but
+        only if it resolves (else fall back, e.g. a checkout with no tic)."""
+        if self._cli_terminfo:
+            tdir = cli_terminfo_dir()
+            if tdir:
+                return 'secure-terminal', tdir
+        return 'xterm-256color', None
+
     # -- child process over a pseudo-terminal ---------------------------------
     def _start(self, command):
+        term, terminfo_dir = self._child_term()
         pid, fd = pty.fork()
         if pid == 0:
-            # child. Always advertise a real terminal: mode (line vs TUI) is now a
-            # pure rendering choice over the SAME byte stream, switchable without a
-            # restart, so the shell must not be pinned to a dumb terminal it cannot
-            # change later. Safety does not rest on TERM: line mode strips every
-            # escape in the renderer regardless (fuzz-proven), and a capable TERM
-            # is what lets a full-screen program actually run once TUI mode is on.
-            os.environ['TERM'] = 'xterm-256color'
+            os.environ['TERM'] = term
+            if terminfo_dir:
+                # prepend our dir; a trailing empty entry keeps the system defaults
+                prev = os.environ.get('TERMINFO_DIRS', '')
+                os.environ['TERMINFO_DIRS'] = terminfo_dir + ':' + (prev or '')
             # Scrub terminal-fingerprint vars inherited from whatever terminal
             # launched us, so the child (and any host it ssh's into) cannot learn
             # the host emulator's identity/version or a correlatable session id.

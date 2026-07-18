@@ -232,6 +232,11 @@ class MainWindow(QMainWindow):
         except (KeyError, ValueError):
             self._paste_delay = 3
         self._default_tui = cfg.get('tui') == 'true'
+        # opt-in: advertise the restricted `secure-terminal` terminfo (CLI-mode)
+        # instead of xterm-256color for new tabs. Off by default (xterm-256color
+        # keeps ssh + TUI working); TERM is fixed at shell start, so this applies
+        # to NEW tabs only.
+        self._default_cli_terminfo = cfg.get('cli_terminfo') == 'true'
         self._default_allow_title = cfg.get('allow_title') == 'true'
         # granular per-OSC-feature defaults (each off = neutralized).
         self._osc_defaults = {}
@@ -493,7 +498,8 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(index)
 
     def new_tab(self, command=None):
-        term = SecureTerminal(tui=self._default_tui, command=command or None)
+        term = SecureTerminal(tui=self._default_tui, command=command or None,
+                              cli_terminfo=self._default_cli_terminfo)
         term.apply_theme(self._default_theme)
         term.apply_zoom(self._default_zoom)
         term.apply_mode(self._default_mode)
@@ -513,7 +519,8 @@ class MainWindow(QMainWindow):
         from the command line."""
         tui = self._default_tui if (spec.get('tui') is None
                                     or 'tui' in self._locked) else spec['tui']
-        term = SecureTerminal(tui=tui, command=spec.get('command') or None)
+        term = SecureTerminal(tui=tui, command=spec.get('command') or None,
+                              cli_terminfo=self._default_cli_terminfo)
         term.apply_theme(self._default_theme)
         term.apply_zoom(self._default_zoom)
         mode = spec.get('mode')
@@ -677,7 +684,8 @@ class MainWindow(QMainWindow):
         """Recreate a tab from saved session state: its settings, name, colour
         and scrollback history, under a fresh shell."""
         history = info.get('text') if isinstance(info.get('text'), str) else ''
-        term = SecureTerminal(tui=bool(info.get('tui')), history=history)
+        term = SecureTerminal(tui=bool(info.get('tui')), history=history,
+                              cli_terminfo=self._default_cli_terminfo)
         theme = info.get('theme')
         term.apply_theme(theme if theme in THEMES else self._default_theme)
         try:
@@ -1036,6 +1044,15 @@ class MainWindow(QMainWindow):
         self._update_security_indicator()
         self._persist()
 
+    def set_cli_terminfo(self, enabled):
+        """Set the restricted-terminfo default for new tabs. TERM is fixed when a
+        shell starts, so this cannot change a running tab -- only new ones."""
+        if 'cli_terminfo' in self._locked:
+            return
+        self._default_cli_terminfo = bool(enabled)
+        self.act_cli_terminfo.setChecked(bool(enabled))
+        self._persist()
+
     def _update_tui_indicator(self):
         term = self.current()
         active = term is not None and term.tui_active()
@@ -1377,6 +1394,7 @@ class MainWindow(QMainWindow):
             ('auto_tab_colors', [self.act_auto_tab_colors]),
             ('osc_notice', [self.act_osc_notice]),
             ('tui', [self.act_tui]),
+            ('cli_terminfo', [self.act_cli_terminfo]),
             ('allow_title', [self.act_title]),
             ('bell', list(self._bell_actions.values())
              + [self.act_bell_sound, self.act_bell_sound_clear]),
@@ -1420,6 +1438,7 @@ class MainWindow(QMainWindow):
             'scrollback': str(self._scrollback),
             'paste_delay': str(self._paste_delay),
             'tui': 'true' if self._default_tui else 'false',
+            'cli_terminfo': 'true' if self._default_cli_terminfo else 'false',
             'allow_title': 'true' if self._default_allow_title else 'false',
             'bell': ','.join(sorted(self._default_bell)),
             'bell_sound': self._default_bell_sound,
@@ -1689,6 +1708,20 @@ class MainWindow(QMainWindow):
             self.act_tui.setText('TUI mode (needs python3-pyte)')
         self.act_tui.toggled.connect(self.set_tui)
         view_menu.addAction(self.act_tui)
+
+        self.act_cli_terminfo = QAction('&Restricted terminfo (CLI)', self,
+                                        checkable=True)
+        self.act_cli_terminfo.setChecked(self._default_cli_terminfo)
+        self.act_cli_terminfo.setToolTip(
+            'Advertise the restricted "secure-terminal" terminfo instead of '
+            'xterm-256color, so CLI-mode programs emit only what this terminal '
+            'renders and never probe it (no cursor addressing, alternate screen, '
+            'or capability queries). Off by default. TERM is fixed when a shell '
+            'starts, so this applies to NEW tabs; keep it off if you ssh or use '
+            'TUI mode, since a remote host / full-screen program needs the fuller '
+            'xterm-256color entry.')
+        self.act_cli_terminfo.toggled.connect(self.set_cli_terminfo)
+        view_menu.addAction(self.act_cli_terminfo)
 
         # act_title stays as a compatibility action (the combined title+notify
         # toggle used by the settings dialog / session), but is NOT shown in the

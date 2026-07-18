@@ -2,7 +2,7 @@ Source: secure-terminal
 Section: utils
 Priority: optional
 Maintainer: ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
-Build-Depends: debhelper-compat (= 13), dh-apparmor, python3, ronn
+Build-Depends: debhelper-compat (= 13), dh-apparmor, ncurses-bin, python3, ronn
 Standards-Version: 4.6.2
 Homepage: https://secure-terminal.github.io
 Vcs-Browser: https://github.com/secure-terminal/secure-terminal
@@ -16,6 +16,7 @@ Depends: ${misc:Depends},
  python3-pyqt6,
  python3-pyte
 Recommends: apparmor,
+ ncurses-bin,
  python3-pyqt6.qtmultimedia
 Description: a terminal where paste is safe by construction
  secure-terminal is a small, line-oriented terminal for pasting commands into,

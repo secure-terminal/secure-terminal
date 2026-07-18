@@ -17,6 +17,11 @@ execute_after_dh_install:
 	install -d debian/secure-terminal/usr/share/secure-terminal
 	dpkg-parsechangelog -S Version \
 		> debian/secure-terminal/usr/share/secure-terminal/version
+	## Compile the opt-in restricted CLI terminfo entry at build time, next to its
+	## source, so an installed system need not run tic at runtime (the app falls
+	## back to compiling into the user cache only for a source checkout).
+	tic -x -o debian/secure-terminal/usr/share/secure-terminal/terminfo \
+		debian/secure-terminal/usr/share/secure-terminal/terminfo/secure-terminal.ti
 
 ## Generate the man page from its ronn source at build time (reproducible date),
 ## the same way derivative-maker packages do, then let dh_installman install it.

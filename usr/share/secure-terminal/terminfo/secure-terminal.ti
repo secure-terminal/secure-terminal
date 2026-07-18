@@ -1,0 +1,27 @@
+# secure-terminal CLI-mode terminfo.
+#
+# In CLI mode the renderer STRIPS every escape sequence and honours only
+# line-local horizontal moves (CSI C/D/G, EL) + SGR colour, and answers NO
+# capability query. This entry advertises exactly that: it inherits the correct
+# colour + SGR caps from xterm-16color, then CANCELS (cap@) everything CLI does
+# not render -- cursor addressing, alternate screen, clear/erase-display,
+# insert/delete line/char, scroll regions, save/restore cursor, back-tab, tab
+# stops, title/status line, mouse -- and the u6/u7/u8/u9 query caps, so a program
+# neither emits sequences we would strip into garbage nor probes a terminal that
+# never answers. Cursor keys are NORMAL mode (\E[A..D), matching what the widget
+# sends; vertical-down is \n; there is no cursor-up.
+#
+# Opt-in as TERM for local CLI-mode shells; keep xterm-256color when you ssh or
+# use TUI mode (a remote host lacks this entry). AI-Assisted.
+secure-terminal|secure-terminal safe CLI (escape-stripping, line-local rendering),
+	cud1=\n, ind=\n, nel=\r\n,
+	kcuu1=\E[A, kcud1=\E[B, kcuf1=\E[C, kcub1=\E[D, khome=\E[H, kend=\E[F,
+	kich1=\E[2~, kdch1=\E[3~, kbs=\177,
+	clear@, cup@, home@, vpa@,
+	cuu@, cuu1@, cud@, ri@, rin@, indn@, csr@, cbt@,
+	sc@, rc@, smcup@, rmcup@, ed@, E3@,
+	il@, il1@, dl@, dl1@, ich@, ich1@, dch@, dch1@, ech@, smir@, rmir@, rep@,
+	smkx@, rmkx@, is2@, rs1@, rs2@, hts@, tbc@,
+	hs@, tsl@, fsl@, dsl@,
+	u6@, u7@, u8@, u9@, RV@, XM@, xm@, kmous@, Ms@, Se@, Ss@,
+	use=xterm-16color,
