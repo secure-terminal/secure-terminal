@@ -131,9 +131,6 @@ _OSC_TERMINATED = re.compile(rb'\x07|\x1b\\')
 _OSC8 = re.compile(rb'\x1b\]8;[^;\x07\x1b]*;([^\x07\x1b]*)(?:\x07|\x1b\\)'
                    rb'(.*?)\x1b\]8;;(?:\x07|\x1b\\)', re.DOTALL)
 # OSC numeric code -> feature key, so a CLI-mode notice can name the exact type.
-# FIRST feature wins a shared code: osc_colors and osc_color_query both list
-# 4/10/11 (set vs the '?' query), but the CLI notice sees only the code, so it
-# names the colour feature (osc_colors, defined first), not the query reply.
 _OSC_CODE_KEY = {}
 for _k, _lbl, _codes, *_rest in OSC_FEATURES:
     for _c in _codes.replace(' ', '').split(','):
@@ -1219,10 +1216,15 @@ class SecureTerminal(QPlainTextEdit):
         sync_end = False
         if _SYNC_BEGIN in probe or _SYNC_END in probe:
             if probe.rfind(_SYNC_BEGIN) > probe.rfind(_SYNC_END):
-                if not self._sync_update:      # ENTER only: a repeat never re-arms
+                # (Re)arm on ENTER, or when an END preceded this BEGIN in the same
+                # read (a NEW frame) -- but NOT on a bare repeated BEGIN while held,
+                # which must not extend the watchdog's bound.
+                if not self._sync_update or _SYNC_END in probe:
                     self._sync_update = True
                     self._render_timer.stop()  # drop a pending partial paint
                     self._sync_timer.start(150)   # bound an update that never closes
+                else:
+                    self._sync_update = True
             else:
                 sync_end = True
 
@@ -1419,61 +1421,10 @@ class SecureTerminal(QPlainTextEdit):
                 self._osc_clipboard(params)
             elif code == 7 and self._osc['osc_cwd']:
                 self._osc_cwd(params)
-            elif code in (4, 10, 11):
-                if params.rstrip().endswith(b'?'):
-                    self._osc_color_query(code, params)   # gated write-back reply
-                elif self._osc['osc_colors']:
-                    self._osc_color(code, params)
-            elif code == 12 and self._osc['osc_colors']:
+            elif code in (4, 10, 11, 12) and self._osc['osc_colors']:
                 self._osc_color(code, params)
             elif code == 1337 and self._osc['osc_iterm2']:
                 self._osc_iterm2(params)
-
-    def _osc_color_value(self, code, params):
-        """The terminal's OWN colour for an OSC 4/10/11 query, as an xterm
-        'rgb:RRRR/GGGG/BBBB' string, or None. Non-secret (our theme/palette)."""
-        theme_bg, theme_fg = THEMES.get(self._theme, THEMES['dark'])
-        if code == 11:
-            col = self._osc_palette.get('bg', theme_bg)
-        elif code == 10:
-            col = self._osc_palette.get('fg', theme_fg)
-        elif code == 4:
-            try:
-                idx = int(params.split(b';', 1)[0])
-            except (ValueError, IndexError):
-                return None
-            if not 0 <= idx < len(ANSI_PALETTE):
-                return None
-            col = self._osc_palette.get(idx, ANSI_PALETTE[idx])
-        else:
-            return None
-        colour = QColor(col)
-        if not colour.isValid():
-            return None
-        return 'rgb:%04x/%04x/%04x' % (colour.red() * 257, colour.green() * 257,
-                                       colour.blue() * 257)
-
-    def _osc_color_query(self, code, params):
-        """Answer an OSC 4/10/11 colour QUERY (';?') with the terminal's own colour
-        -- the ONE write-back to the pty we allow, and only when BOTH: the user
-        enabled osc_color_query AND a full-screen program owns the ALTERNATE SCREEN.
-        Alt-screen (not raw mode) is the gate: a bash/zsh readline prompt also runs
-        the pty non-canonical, so ICANON-off does NOT prove a full-screen program is
-        consuming the reply -- but the alternate screen is never held by a shell
-        prompt, so a reply there is consumed by the running program, never injected
-        onto a command line (the reflection-oracle vector). The reply is the
-        terminal's non-secret colour and carries no attacker-influenced content."""
-        if not self._osc.get('osc_color_query') or not self._alt_screen:
-            return
-        value = self._osc_color_value(code, params)
-        if value is None:
-            return
-        if code == 4:
-            idx = int(params.split(b';', 1)[0])
-            reply = '\x1b]4;%d;%s\x07' % (idx, value)
-        else:
-            reply = '\x1b]%d;%s\x07' % (code, value)
-        self._write(reply.encode('ascii'))
 
     def _parse_osc_color(self, spec):
         """An OSC colour spec ('rgb:RR/GG/BB', '#RRGGBB', or a name) -> '#rrggbb',
