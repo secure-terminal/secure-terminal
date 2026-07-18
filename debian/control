@@ -15,7 +15,8 @@ Architecture: all
 Depends: ${misc:Depends},
  python3,
  python3-pyqt6,
- python3-pyte
+ python3-pyte,
+ qt6-svg-plugins
 Recommends: apparmor,
  ncurses-bin,
  python3-pyqt6.qtmultimedia

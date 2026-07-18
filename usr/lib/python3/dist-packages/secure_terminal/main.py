@@ -27,7 +27,8 @@ from PyQt6.QtWidgets import (
 
 from PyQt6.QtNetwork import QLocalServer
 from secure_terminal import settings, session, ipc
-from secure_terminal.sanitize import sanitize_paste, OSC_FEATURES, OSC_FEATURE_BY_KEY
+from secure_terminal.sanitize import (
+    sanitize_paste, OSC_FEATURES, OSC_FEATURE_BY_KEY, luminance)
 from secure_terminal.terminal import (
     SecureTerminal, THEMES, DISPLAY_MODES, tui_available,
     sound_file_allowed, BELL_SOUND_DIRS,
@@ -873,8 +874,12 @@ class MainWindow(QMainWindow):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(1, 1, 16, 16, 4, 4)
         label = str(n)
-        painter.setPen(QColor('#ffffff') if dot.lightnessF() < 0.6
-                       else QColor('#000000'))
+        # pick the digit colour by relative luminance, the same rule the contrast
+        # guard uses -- HSL lightness misjudges saturated swatches (bright yellow
+        # would wrongly take white text), luminance does not.
+        painter.setPen(QColor('#000000')
+                       if luminance((dot.red(), dot.green(), dot.blue())) > 127
+                       else QColor('#ffffff'))
         font = QFont()
         font.setPixelSize(11 if len(label) == 1 else 9)
         font.setBold(True)
