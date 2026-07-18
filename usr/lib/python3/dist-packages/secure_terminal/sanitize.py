@@ -296,6 +296,12 @@ def render_output(text, mode='strip'):
         cp = ord(ch)
         if cp in (0x08, 0x09, 0x0A, 0x0D) or 0x20 <= cp <= 0x7E:
             out.append(ch)
+        elif cp == 0x07:
+            # A standalone BEL is a bell SIGNAL (rung, or not, per the bell
+            # setting), not display content -- drop it so it never shows as a
+            # placeholder or a <U+0007> badge (a program ringing the bell, e.g.
+            # zsh on an ambiguous completion, must not litter the line).
+            continue
         elif mode == 'detail':
             out.append(_detail_badge(cp))
         elif mode == 'reveal':
