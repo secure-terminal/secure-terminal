@@ -454,6 +454,12 @@ class SecureTerminal(QPlainTextEdit):
         # flipping to TUI mode shows the program's current frame instantly (no
         # restart). Maintained from the output stream (alt-screen enter/leave).
         self._alt_screen = False
+        # True while the grid view is rendering the alternate screen ALONE (grid
+        # only, no scrollback above it). Lets _render_tui clear the carried-in
+        # scrollback exactly once when a full-screen program takes the alt screen,
+        # so its bottom row (e.g. tmux's status bar) is not pushed below the
+        # viewport and no spurious scrollbar appears.
+        self._alt_view = False
         self._grid_shown = False      # is the fixed pyte grid currently on screen
         # Local caret echoes (^C, ^\) awaiting possible de-duplication against the
         # shell's own echo: [(text, deadline_monotonic), ...]. See _echo_caret.
@@ -942,9 +948,26 @@ class SecureTerminal(QPlainTextEdit):
         at_bottom = bar is None or bar.value() >= bar.maximum() - 2
         prev_scroll = bar.value() if bar is not None else 0
         self.setUpdatesEnabled(False)
-        self._delete_grid()
-        self._append_scrollback(screen)
-        self._append_grid(screen)
+        if self._alt_screen:
+            # A full-screen program holds the alternate screen: it is a fixed
+            # canvas with no scrollback, so render ONLY the grid. History above it
+            # would push the grid's bottom row (e.g. tmux's status bar) below the
+            # viewport and add a spurious scrollbar. Clear the carried-in scrollback
+            # exactly once, on the frame the view enters this state.
+            if not self._alt_view:
+                self._reset_grid_view()
+                self._alt_view = True
+            self._delete_grid()
+            self._append_grid(screen)
+        else:
+            # Left the alternate screen: rebuild the scrolling view from a clean
+            # document so the restored primary scrollback is shown once.
+            if self._alt_view:
+                self._reset_grid_view()
+                self._alt_view = False
+            self._delete_grid()
+            self._append_scrollback(screen)
+            self._append_grid(screen)
         self.setUpdatesEnabled(True)
         if at_bottom:
             self._place_grid_cursor(screen)
