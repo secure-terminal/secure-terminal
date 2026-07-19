@@ -1179,7 +1179,11 @@ class SecureTerminal(QPlainTextEdit):
     def _start(self, command):
         term, terminfo_dir = self._child_term()
         pid, fd = pty.fork()
-        if pid == 0:
+        if pid == 0:  # pragma: no cover
+            # (no cover: this branch runs in the pty.fork child and immediately
+            # execvp()s or os._exit()s, so the parent's coverage tracer never
+            # receives its line data; the child setup is exercised end-to-end by
+            # the widget tests that spawn a real command and read its output.)
             os.environ['TERM'] = term
             if terminfo_dir:
                 # prepend our dir; a trailing empty entry keeps the system defaults
