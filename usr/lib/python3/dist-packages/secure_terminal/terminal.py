@@ -168,6 +168,10 @@ _ALT_LEAVE_BYTES = (b'\x1b[?1049l', b'\x1b[?1047l', b'\x1b[?47l')
 # unconditionally; a watchdog bounds an update that is never closed.
 _SYNC_BEGIN = '\x1b[?2026h'
 _SYNC_END = '\x1b[?2026l'
+# Bracketed paste is DECSET *private* mode 2004. pyte stores private modes in
+# screen.mode shifted left by 5 (so they cannot collide with ANSI modes), so the
+# program's `\x1b[?2004h` lands as 2004 << 5 -- test for that, not the bare 2004.
+_BRACKETED_PASTE_MODE = 2004 << 5
 
 
 def tui_available():
@@ -2353,6 +2357,6 @@ class SecureTerminal(QPlainTextEdit):
         # Bracketed paste when the TUI program asked for it (DEC mode 2004), so a
         # multi-line paste is delivered as data, not interpreted as keystrokes.
         if self.tui_active() and self._screen is not None \
-                and 2004 in getattr(self._screen, 'mode', ()):
+                and _BRACKETED_PASTE_MODE in getattr(self._screen, 'mode', ()):
             data = b'\x1b[200~' + data + b'\x1b[201~'
         self._write(data)
