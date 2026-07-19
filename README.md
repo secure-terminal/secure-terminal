@@ -171,13 +171,35 @@ it. Turn on TUI mode when you want those interactive features to render.
 secure-terminal
 ```
 
-## Build
-
-Standard Debian source package (`debhelper`); depends on `python3-pyqt6`.
-
-```
-dpkg-buildpackage -us -uc -b
-```
-
 Built with Python and Qt6. AI-assisted; see
 [org-ai-assisted](https://github.com/org-ai-assisted).
+
+## How to install `secure-terminal`
+
+A standard Debian source package. Build it from source (below) and install the
+resulting `.deb`, or run it in place from a checkout (`./usr/bin/secure-terminal`).
+
+## How to Build deb Package from Source Code
+
+Can be built using standard Debian package build tools such as:
+
+    dpkg-buildpackage -b
+
+See instructions. (Replace `generic-package` with the actual name of this
+package `secure-terminal`.)
+
+-   **A)**
+    [easy](https://www.kicksecure.com/wiki/Dev/Build_Documentation/generic-package/easy),
+    *OR*
+-   **B)** [including verifying software
+    signatures](https://www.kicksecure.com/wiki/Dev/Build_Documentation/generic-package)
+
+## Contact
+
+-   [Free Forum Support](https://forums.kicksecure.com)
+-   [Professional Support](https://www.kicksecure.com/wiki/Professional_Support)
+
+## Donate
+
+`secure-terminal` requires [donations](https://www.kicksecure.com/wiki/Donate) to
+stay alive!

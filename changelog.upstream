@@ -1,0 +1,166 @@
+2026-07-19 6a5e6da fuzz: add a harness for the settings + session on-disk parsers
+2026-07-19 7c2f36a fuzz: add parse_sgr / classify_paste / ipc.Framer harnesses; harden parse_sgr
+2026-07-19 5fbfb31 make QtMultimedia (+ terminfo tools) hard dependencies, not optional
+2026-07-19 21ea89c ci: install ncurses-term so tic can compile the restricted terminfo
+2026-07-19 c802ef7 fuzz: allow the STRIP_BOX placeholder in the cells_to_runs safety check
+2026-07-19 a168736 ci: install ncurses-bin so tic is available for the terminfo tests
+2026-07-19 cca680a main: mark the three genuinely-unreachable defensive lines no-cover
+2026-07-19 a8a9349 terminal: mark the genuinely-unreachable defensive/optional lines no-cover
+2026-07-18 82eb65c terminal: fix bracketed paste never activating (pyte private-mode shift)
+2026-07-18 9d13e39 terminal: mark optional-pyte + no-QApplication fallbacks no-cover
+2026-07-18 cab11ac terminal: mark the pty.fork child block no-cover
+2026-07-18 487dd79 cli: mark the unmeasurable defensive branches no-cover
+2026-07-18 675b04f CI: fix the Coverity project-name to the registered slug
+2026-07-18 83d48f9 CI: add python3-coverage for the secure-terminal-tests-coverage gate
+2026-07-18 cc245f1 Interactive, zoom-aware tooltips (selectable + copyable)
+2026-07-18 ba67929 Find in scrollback: per-tab and across all tabs
+2026-07-18 6b9fe2f Address ai-review: SVG icon dependency + luminance-based tab-number contrast
+2026-07-18 5950aa7 Remove stray nano.*.save file committed by accident
+2026-07-18 2d71982 Tab numbers in the colour swatch; move the notice banner below the tab bar
+2026-07-18 2594ea8 About dialog: show the app logo; set the window icon; explain the char-copy popup
+2026-07-18 04ea050 sanitize: drop a standalone BEL from display instead of showing it as a badge
+2026-07-18 1732346 terminal: show a box for a neutralized byte, copy/save it back as ASCII "_"
+2026-07-18 2a7caa3 terminal: render the alternate screen alone, so a status bar is not clipped
+2026-07-18 231fac6 terminal: render private-marked SGR in TUI mode instead of dropping the frame
+2026-07-18 25102e3 launch CLI: per-tab colours / cli-terminfo / bell / OSC-feature overrides
+2026-07-18 b95bb48 OSC 52 clipboard read: four-way dialog (once/always) + global always-allow
+2026-07-18 c98d9a8 Add opt-in system tray (default off) with safe, fixed-text features
+2026-07-18 aca00d9 Add --test-canary: an EICAR-style positive control for security-test harnesses
+2026-07-18 107d06a Fix OSC 52 read robustness (codex review follow-up)
+2026-07-18 0ac0177 Implement OSC 52 clipboard READ: opt-in, human-gated once per tab
+2026-07-17 eedd7aa Revert the gated OSC colour-query write-back; keep the by-construction closure
+2026-07-17 9991543 Support 256-colour and 24-bit truecolour SGR in CLI mode
+2026-07-17 23b3d21 Fix colour-query gate + synchronized-output edges (codex review)
+2026-07-17 1cf2ea3 Add synchronized output (DECSET 2026) + gated OSC 10/11/4 colour query
+2026-07-17 8448d53 terminfo: ncurses-term build-dep + cancel more stripped caps (codex)
+2026-07-17 dfe7fa1 Add an opt-in restricted CLI terminfo entry
+2026-07-17 9d708fd Add .push-checklist for the pre-push reminder hook
+2026-07-17 4148897 Harden notifications (codex review follow-up)
+2026-07-17 2ee44a2 Notifications: non-exclusive channels + tray popup + sound file
+2026-07-17 e4c3852 Fix OSC read-boundary carry to hold a split introducer
+2026-07-17 6ab9f2d ai-review-todo: drop the done-review log; open-only
+2026-07-17 80cc46e ai-review-todo: both deferred reviews done, findings fixed
+2026-07-17 560dda6 Harden TUI emulator + granular OSC (deferred codex reviews)
+2026-07-17 42193cc Harden the shortcuts editor (codex review follow-up)
+2026-07-17 da47215 Fix bell + discard-state edge cases (codex review follow-up)
+2026-07-17 7a5d323 Add configurable, documented window keyboard shortcuts
+2026-07-17 d1507d2 Add an optional bell (BEL) policy: off / audible / visual, per tab
+2026-07-17 c8c6842 Harden DCS/string-sequence stripping (codex review follow-up)
+2026-07-17 1732960 Strip DCS/SOS/PM/APC bodies in CLI mode; scrub fingerprint env; fix help
+2026-07-17 6eba6e0 OSC notice: once per TYPE per tab, with per-type + global mute
+2026-07-17 ae7e766 Logo: redesign without mac-style window decorations
+2026-07-17 d5039aa Clarify the OSC / security threat model (accuracy for lay users)
+2026-07-17 aa78b27 Add ai-review-todo.md: pending reviews to re-run once codex is available
+2026-07-17 23eb186 OSC colours: do not render per palette change (DoS guard)
+2026-07-17 d6545e8 OSC granular controls: settings-dialog section (third surface)
+2026-07-17 ca5b1b9 OSC handler: hyperlinks (OSC 8) - surface the real target (anti-phishing)
+2026-07-17 a07bc04 OSC handler: palette / colours (OSC 4/10/11/12), gated, hide-proof
+2026-07-17 76e2c04 OSC granular UI: per-feature View menu, security lamp, config, cwd tooltip
+2026-07-17 731a58e OSC handlers: per-feature dispatcher + clipboard (52), cwd (7), iTerm2 (1337)
+2026-07-17 3d2f267 OSC granular controls: feature registry + config keys (foundation)
+2026-07-17 0128da1 Packaging: man page (ronn), app icon, .desktop icon/WMClass, AppStream metainfo
+2026-07-17 1bfd657 fuzz: exercise feed_line_edits width bound (max_line) in the Atheris harness
+2026-07-17 4f8a066 README: update TUI-mode security section + comparison for the full emulator
+2026-07-17 0c55f9d Fix codex review of the TUI emulator (3 P1 + 2 P2)
+2026-07-17 6e3534b TUI mode: full terminal emulator with scrollback (renders completion menus)
+2026-07-17 d196946 OSC notice: auto-dismiss when OSC handling is enabled or the notice is turned off
+2026-07-17 79760bd Fix codex review of the OSC-notice / advisory work (4 P2)
+2026-07-17 e9961f5 Line mode: advise TUI when a program redraws above the cursor (completion menu)
+2026-07-17 f6b288c TUI: grid fits the viewport (no sideways scroll); auto-dismiss the TUI advisory
+2026-07-17 f16e56e Notice when a program uses an OSC escape that line mode strips
+2026-07-17 59c91d0 Line mode: stop leaking split OSC titles; pad cursor-forward for right-prompts
+2026-07-16 7c3af25 Character hit-test: geometry-based, astral- and RTL-safe (2 P2)
+2026-07-16 ad2d500 Fix codex review of the popup/banner work (3 P2)
+2026-07-16 1112919 Inspect a marked character: hover tooltip + double-click copyable popup
+2026-07-16 0416040 Advisories: dismissible window banner instead of injecting into the terminal
+2026-07-16 ddfaddb gitignore: ignore hypothesis example database
+2026-07-16 fab4bb7 Fix second codex review (P2): astral copy, autowrap clamp, tab colours
+2026-07-16 e54496b main: automatic per-tab colours (default on, neighbour-distinct)
+2026-07-16 0ce3f06 Fix CodeQL findings (real 5-tuple bug in the fuzz harness + cleanups)
+2026-07-16 79b988d main: hint that a tab is editable (pointing-hand cursor + tooltip)
+2026-07-16 9fb742d terminal: resize the grid to the full window when entering TUI on a live program
+2026-07-16 0f78b9d main: toolbar chips must not steal focus (caret vanished on mode change)
+2026-07-16 ae07b1d autowrap: deferred (VT last-column) wrap + join wrapped rows on copy
+2026-07-16 8ed4596 Fix codex review findings + make Detail the default unicode mode
+2026-07-16 b9c0a79 terminal: hard-wrap line-mode output at the reported width (autowrap)
+2026-07-16 2758f38 sanitize,terminal,main: colour neutralized/revealed markings by risk class
+2026-07-16 daae24f sanitize,main: add a verbose "Detail" unicode display mode
+2026-07-16 e426cd4 terminal: echo ^C / ^\ locally, de-duped against the shell's own echo
+2026-07-16 d51b1b0 terminal: document that caret echo (^C) is the tty/shell's job
+2026-07-16 8a45c51 main: clarify the NO_COLOR wording in the colors tooltip
+2026-07-16 1e3eab2 main: preview the option's safety colour on chip hover
+2026-07-16 f1d2056 main: add safety-coloured dot icons to the toolbar chips
+2026-07-16 e55fc76 main,terminal: clarify escape-safety wording; name the default mode "CLI"
+2026-07-16 3130e5f terminal: keep scrollback when toggling CLI<->TUI at a shell prompt
+2026-07-16 7436dc4 main: document the title/notifications residual-risk assessment in its tooltip
+2026-07-16 c5b6065 main: group the toolbar settings into labelled, bordered chip boxes
+2026-07-16 15d366a sanitize: make sanitize_title idempotent (ClusterFuzzLite/Atheris finding)
+2026-07-16 f301edb fuzz: add ClusterFuzzLite + Atheris coverage-guided fuzzing and Coverity
+2026-07-16 ccd99a8 Hook rules: split on ' | ', not '|', so a regex alternation is not mangled
+2026-07-16 0fae8da Hooks: AI prompt and allow/block/ask rules are tiered config, not baked-in code
+2026-07-16 0bbe1ae Add /usr/lib/secure-terminal.d built-in config tier (systemd .d convention)
+2026-07-16 373a16d ctl dump-tab: sanitized readback of a tab's rendered text (for E2E tests)
+2026-07-16 1ac3da2 Drop the non-functional --session flag; --tab is the tab-config mechanism
+2026-07-16 8f8f3e4 Remote control (ctl), admin-opt-in only (stage 3)
+2026-07-16 01bbacc Single-instance by default over an owner-only socket (stage 2)
+2026-07-16 957113f Launch CLI: tab title, window class/name, multi-tab, end-of-options (stage 1)
+2026-07-16 6f9f6c0 Privileged, lockable settings for hardened/corporate deployments
+2026-07-16 fa9e91f Command hook: fail safe on a history-recalled or edited line
+2026-07-16 3e3cd07 Line mode: a logical-cell line editor (fixes badge backspace + prompt drift)
+2026-07-16 e57c2e2 Reveal-badge tooltip; fix bugs found in code review of the renderer-only change
+2026-07-16 9741e24 Default tab label follows the working directory, not a static "shell"
+2026-07-16 f0945d8 Renderer-only mode switch (no restart); advisory, arrow keys, colours, strip=yellow
+2026-07-16 4bcb3f8 Line mode: sync the pty winsize; snap the caret back on a plain click
+2026-07-16 304b964 Three-way paste dialog; clarify the TUI "no OS reach" wording
+2026-07-16 b4d1135 Bound the mode-toggle re-render so a flood cannot freeze the UI
+2026-07-16 069d0b8 Unicode modes as 3 colour-coded buttons; two-lamp security indicator
+2026-07-16 15d1bfb Use only safe illustrations in the example hook (no rm -rf)
+2026-07-16 0571c14 Ship an AI-judge example hook (pipe the command to an AI)
+2026-07-15 fc646a7 Implement the opt-in command hook
+2026-07-15 17057e3 Add secure-terminal-cli: a sanitizing pty wrapper (GUI/CLI split)
+2026-07-15 958db6c Add a slash-command palette (Ctrl+Shift+P)
+2026-07-15 9fbf3a5 Bake the version from debian/changelog at build; read it at runtime
+2026-07-15 78667d1 Add a Global Settings dialog
+2026-07-15 c9fc50a Add a Help > About dialog
+2026-07-15 0a74033 Add an AppArmor profile
+2026-07-15 b0cdac9 Add a traffic-light security indicator to the status bar
+2026-07-15 3c205f9 Do not disable colours based on the terminal's own launch TERM
+2026-07-15 89e11c2 Never let a pyte parser error crash the terminal
+2026-07-15 7cb4168 Toolbar: unicode display as on/off toggles with icons
+2026-07-15 b0e56dd Split session scrollback into one log file per tab
+2026-07-15 8d5ddfd Re-render the whole scrollback when the display mode changes
+2026-07-15 e35ebfc Paste warning: name the hidden classes and show what will be sent
+2026-07-15 930a0ec Add standard terminal keybindings; simplify two toggle labels
+2026-07-15 f4a8849 Fix the cat /dev/random freeze: bulk line-mode rendering
+2026-07-15 0910258 Drop the qt.text.font.db warning flood from show-mode output
+2026-07-15 03d45a4 Send Ctrl+key as its control byte in line mode, like a real terminal
+2026-07-15 0120290 Drop Claude Code from the TUI-mode help and comments
+2026-07-15 c7c94b8 Make Page Up scroll the scrollback in line mode
+2026-07-15 34e0f42 Fix crash on multi-codepoint cells; allow typing printable unicode
+2026-07-15 706fe97 Fix wall of spaces before input, and backspace only deleting one character
+2026-07-15 e9908f4 Packaging: make python3-pyte a hard dependency; drop Qt6/Claude-Code framing
+2026-07-15 e396a01 Settings: write to 50_user.conf, not 99-user.conf
+2026-07-15 2ab9c77 Settings: drop the legacy single-file config
+2026-07-15 56eb9f9 Drop-in .conf settings directories + a Settings > Folders & Files dialog
+2026-07-15 2c69bd7 Persist tabs + scrollback across restart and reboot
+2026-07-15 a225ff9 CI: add python3-hypothesis for the fuzz suite
+2026-07-15 952fd13 Configurable startup command: New Tab Running...
+2026-07-15 85bf8e9 Keep the user tab name and the program title as two separate titles
+2026-07-15 fc5d3e4 Clear CodeQL findings; add Bandit + CodeQL CI; widget-test deps
+2026-07-15 395389a Rename/colour tabs; opt-in program title + notifications
+2026-07-15 6fc9247 Add opt-in TUI mode: run ssh, editors and the Claude Code CLI
+2026-07-15 2fc6709 CI: opt in to the dist-ai test suites
+2026-07-15 654077e Extract the Qt-free sanitization core into secure_terminal.sanitize
+2026-07-15 1f3b63d Add a paste-warning dialog for unicode / control characters
+2026-07-15 a93c348 Add configurable scrollback length and save-transcript
+2026-07-15 7e93c61 Persist settings (theme, zoom, unicode mode, colors) under ~/.config
+2026-07-15 2a63f45 Add optional safe ANSI colors (per tab, default off) + NO_COLOR/TERM=dumb
+2026-07-15 ac0bd17 Add per-tab unicode display modes: strip / show / reveal
+2026-07-15 7f3862a Packaging: drop dh_python3 to keep the -Bsu shebang and ship no pyc
+2026-07-15 e575382 Fix commands producing no output; use -Bsu shebang
+2026-07-15 81a2c6b Honor carriage return line-locally: fix stray "%" + whitespace before prompt
+2026-07-15 08f20d2 Guaranteed program exit, per-tab theme/zoom, toolbar icons
+2026-07-15 0435b90 Auto-reap exited shells; document the backspace residual honestly
+2026-07-15 012d8c4 Add tabs, text zoom, themes, copy/paste, menu bar
+2026-07-15 4da7dfb Run from source, terminate on parent-terminal signals, fix backspace erase
+2026-07-15 d48cfd5 initial secure-terminal: Python/Qt6 line-oriented terminal; ASCII-only display, ANSI/escape neutralization, sanitized paste, signal keys Ctrl+C/Z/backslash/D; derivative-maker-style package layout
