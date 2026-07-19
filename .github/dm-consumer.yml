@@ -12,7 +12,8 @@ coverity:
   project-name:    "secure-terminal/secure-terminal"
   canonical-repos: "secure-terminal/secure-terminal,org-ai-assisted/secure-terminal"
 
-## The widget suite runs secure-terminal offscreen (PyQt6 + pyte) and the fuzz
-## suite uses hypothesis, so the container needs these on top of python3.
+## The widget suite runs secure-terminal offscreen (PyQt6 + pyte), the fuzz suite
+## uses hypothesis, and the coverage gate uses coverage.py, so the container needs
+## these on top of python3.
 dist-ai-tests:
-  apt-packages: "python3 python3-pyqt6 python3-pyte python3-hypothesis"
+  apt-packages: "python3 python3-pyqt6 python3-pyte python3-hypothesis python3-coverage"
