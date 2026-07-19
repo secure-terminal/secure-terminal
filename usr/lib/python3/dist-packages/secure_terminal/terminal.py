@@ -80,8 +80,8 @@ import shlex
 
 try:
     import pyte
-except ImportError:                      # TUI mode is unavailable without pyte
-    pyte = None
+except ImportError:  # pragma: no cover - pyte is a hard runtime dependency
+    pyte = None                          # (TUI mode is unavailable without it)
 
 if pyte is not None:
     class _SafeHistoryScreen(pyte.HistoryScreen):
@@ -99,7 +99,7 @@ if pyte is not None:
             if private:
                 return
             super().select_graphic_rendition(*attrs)
-else:
+else:  # pragma: no cover - pyte is a hard runtime dependency (always present)
     _SafeHistoryScreen = None
 
 from PyQt6.QtCore import (QSocketNotifier, Qt, QTimer, pyqtSignal, QEvent,
@@ -741,7 +741,7 @@ class SecureTerminal(QPlainTextEdit):
             return
         self._last_bell = now
         app = QApplication.instance()
-        if app is None:
+        if app is None:  # pragma: no cover - a running widget always has a QApplication
             return
         if 'audible' in self._bell_channels:
             if not self._play_sound():
