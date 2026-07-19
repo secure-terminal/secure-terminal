@@ -58,9 +58,12 @@ def _outer_winsize():
 def _run(argv, mode):
     argv = list(argv) or [os.environ.get('SHELL') or '/bin/bash']
     pid, fd = pty.fork()
-    if pid == 0:
+    if pid == 0:  # pragma: no cover
         # child: a dumb terminal so programs emit little to strip; the wrapper
         # honours only the safe cursor controls (backspace, carriage return).
+        # (no cover: this branch immediately execvp()s or os._exit()s, so a
+        # coverage tracer in the parent never receives the child's line data;
+        # the behaviour is exercised end-to-end by the CLI tests instead.)
         os.environ['TERM'] = 'dumb'
         os.environ.setdefault('PAGER', 'cat')
         try:
@@ -75,7 +78,7 @@ def _run(argv, mode):
         _set_winsize(fd, *_outer_winsize())
     try:
         signal.signal(signal.SIGWINCH, on_resize)
-    except (OSError, ValueError):
+    except (OSError, ValueError):  # pragma: no cover - only off the main thread
         pass            # no controlling terminal -> resize just does not fire
 
     decoder = codecs.getincrementaldecoder('utf-8')('replace')
@@ -89,21 +92,21 @@ def _run(argv, mode):
         while True:
             try:
                 readable, _, _ = select.select([fd, stdin_fd], [], [])
-            except (OSError, select.error):
+            except (OSError, select.error):  # pragma: no cover - PEP 475 retries EINTR
                 continue            # EINTR from SIGWINCH etc. -> retry
             if fd in readable:
                 try:
                     data = os.read(fd, 65536)
                 except OSError:
                     break
-                if not data:
+                if not data:  # pragma: no cover - Linux pty EOF raises EIO (above)
                     break           # child exited / pty closed
                 safe = render_output(decoder.decode(data), mode)
                 os.write(out_fd, safe.encode('utf-8', 'replace'))
             if stdin_fd in readable:
                 try:
                     keys = os.read(stdin_fd, 65536)
-                except OSError:
+                except OSError:  # pragma: no cover - defensive stdin read-error guard
                     break
                 if not keys:
                     os.write(fd, b'\x04')   # our EOF -> send the child EOF
