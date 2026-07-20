@@ -1519,8 +1519,8 @@ class SecureTerminal(QPlainTextEdit):
                 self._osc_cwd(params)
             elif code in (4, 10, 11, 12) and self._osc['osc_colors']:
                 self._osc_color(code, params)
-            elif code == 1337 and self._osc['osc_iterm2']:
-                self._osc_iterm2(params)
+            # every other OSC code (iTerm2's OSC 1337 among them) matches no branch
+            # and is dropped -- recognized, never acted on, never leaked.
 
     def _parse_osc_color(self, spec):
         """An OSC colour spec ('rgb:RR/GG/BB', '#RRGGBB', or a name) -> '#rrggbb',
@@ -1663,12 +1663,6 @@ class SecureTerminal(QPlainTextEdit):
         if path and path != self._reported_cwd:
             self._reported_cwd = path
             self.cwd_changed.emit(path)
-
-    def _osc_iterm2(self, params):
-        """OSC 1337: iTerm2 proprietary. File upload/download from untrusted output
-        is indefensible, so it is DECLINED even when enabled -- this handler makes
-        the escape recognized (not leaked) but performs no iTerm2 action."""
-        return
 
     def shutdown(self):
         """Detach the notifier, close the master fd and hang up the child. Used

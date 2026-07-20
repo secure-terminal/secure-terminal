@@ -250,10 +250,12 @@ OSC_FEATURES = (
     ('osc_cwd', 'Working-directory report', '7', False, 'low',
      'Untrusted output can set the tab\'s reported directory. Minor: it discloses '
      'a path and some shells act on it.'),
-    ('osc_iterm2', 'iTerm2 extensions', '1337', False, 'high',
-     'Untrusted output could use iTerm2 proprietary escapes (file upload / '
-     'download, set variables) -- a very large surface.'),
 )
+# iTerm2 proprietary escapes (OSC 1337: file upload/download, set variables) are
+# NOT in this registry: file transfer from untrusted output is indefensible, so
+# they can never be safely enabled. They are always neutralized (dropped), and
+# there is deliberately no toggle -- a setting you cannot turn on would only
+# mislead. See _handle_osc, which acts on no code outside this registry.
 
 # key -> (label, codes, default, risk, hint), for quick lookup.
 OSC_FEATURE_BY_KEY = {f[0]: f[1:] for f in OSC_FEATURES}

@@ -1476,7 +1476,7 @@ class MainWindow(QMainWindow):
     def _osc_level(self):
         """The OSC risk axis as (colour, short, detail): green when every OSC
         feature is neutralized (the default); yellow when a low/medium one is
-        enabled; red when a high-risk one (clipboard, iTerm2) is enabled."""
+        enabled; red when a high-risk one (clipboard) is enabled."""
         term = self.current()
         enabled = [k for k in self._osc_defaults if self._osc_defaults[k]]
         if term is not None:
@@ -2355,7 +2355,10 @@ class MainWindow(QMainWindow):
         osc_menu = view_menu.addMenu('&OSC features')
         osc_menu.setToolTip('Each is a way a program can act on your system '
                             '(title, clipboard, ...). All neutralized by default; '
-                            'enable at your own risk (only in TUI mode).')
+                            'enable at your own risk (only in TUI mode). iTerm2 '
+                            'file-transfer escapes (OSC 1337) are always '
+                            'neutralized and have no toggle -- they can never be '
+                            'safely enabled.')
         _risk_tag = {'low': '', 'medium': '   [risk: medium]',
                      'high': '   [RISK: HIGH]'}
         for key, label, codes, _dflt, risk, hint in OSC_FEATURES:
