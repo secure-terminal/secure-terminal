@@ -3164,16 +3164,20 @@ def _install_signal_quit(app):
     """Terminate on the usual signals from the launching terminal: Ctrl+C
     (SIGINT), plus SIGTERM and SIGHUP. Qt's C++ event loop does not deliver
     Python signal handlers on its own, so a periodic no-op timer wakes it often
-    enough for the handler to run."""
+    enough for the handler to run. quit() emits aboutToQuit, which tears every
+    tab's pty down inside the event loop (see main), so nothing fires into a
+    half-destroyed object during the XCB teardown that follows."""
+    wake = QTimer(app)
+    wake.timeout.connect(lambda: None)
+
     def handler(_signum, _frame):
+        wake.stop()                     # no more wake ticks racing teardown
         app.quit()
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         try:
             signal.signal(sig, handler)
         except (OSError, ValueError, AttributeError):
             pass        # a signal not settable here stays at its default
-    wake = QTimer(app)
-    wake.timeout.connect(lambda: None)
     wake.start(200)
 
 

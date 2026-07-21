@@ -1698,9 +1698,15 @@ class SecureTerminal(QPlainTextEdit):
 
     def shutdown(self):
         """Detach the notifier, close the master fd and hang up the child. Used
-        when a tab is closed so the shell does not linger."""
+        when a tab is closed so the shell does not linger, and on app quit so the
+        pty machinery is torn down inside the event loop, not during teardown."""
+        self._render_timer.stop()          # no pending paint fires into teardown
         if self._notifier is not None:
             self._notifier.setEnabled(False)
+            try:
+                self._notifier.activated.disconnect()   # no late readable callback
+            except (TypeError, RuntimeError):
+                pass                       # already disconnected -> nothing to do
             self._notifier = None
         if self._fd is not None:
             try:
