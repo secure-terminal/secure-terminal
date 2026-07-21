@@ -1551,7 +1551,7 @@ class MainWindow(QMainWindow):
     def _display_level(self):
         """The display (unicode) risk axis as (colour, short, detail). Show
         renders deceptive glyphs (red). Reveal is safe AND lossless -- the exact
-        <U+XXXX> codepoint is shown (green). Strip is safe too -- non-ASCII becomes
+        <U+XXXX> codepoint is shown (green). Box is safe too -- non-ASCII becomes
         a coloured box, hard to miss (green); lossy, but nothing deceptive."""
         term = self.current()
         mode = term.current_mode() if term is not None else 'strip'
@@ -1564,7 +1564,7 @@ class MainWindow(QMainWindow):
                     'classes are still neutralized and pasting is still sanitized, '
                     'but a rendered glyph can deceive the eye. This is the highest '
                     'risk, above TUI mode, because the deception is in what you '
-                    'read.\n\nSwitch to Strip or Reveal to remove it.')
+                    'read.\n\nSwitch to Box or Reveal to remove it.')
         if mode == 'reveal':
             return ('#1f8a54', 'Reveal',
                     'Display: REVEAL (green, safe).\n\n'
@@ -1581,14 +1581,16 @@ class MainWindow(QMainWindow):
                     'identity, not just a number (the annotation unicode-show '
                     'prints). Escape sequences are removed and pasting is '
                     'sanitized.')
-        return ('#1f8a54', 'Strip',
-                'Display: STRIP (green, safe).\n\n'
-                'Non-ASCII output becomes a coloured box -- one per character, '
+        return ('#1f8a54', 'Box',
+                'Display: BOX (green, safe).\n\n'
+                'Non-ASCII output is drawn as a coloured box -- one per character, '
                 'coloured by risk class -- so nothing deceptive is drawn and a '
                 'neutralized character is hard to miss. Still lossy: you see that '
-                'something was stripped, not which codepoint; switch to Reveal for '
+                'something was there, not which codepoint; switch to Reveal for '
                 'the exact <U+XXXX>. Escape sequences are removed and pasting is '
-                'sanitized either way.')
+                'sanitized either way.\n\nThis is a DISPLAY setting: it never alters '
+                'the bytes a program pipes or redirects elsewhere, so "cat file | '
+                'bash" runs the file regardless of the mode.')
 
     def _mode_level(self):
         """The interpretation (mode) risk axis: TUI interprets escapes in a
@@ -1618,7 +1620,7 @@ class MainWindow(QMainWindow):
                 'command" risk) cannot execute anything here, whatever the '
                 'unicode setting.\n\n'
                 'How non-ASCII characters themselves are shown is the separate '
-                'unicode setting (Strip / Reveal / Show); none of those re-enable '
+                'unicode setting (Box / Reveal / Show); none of those re-enable '
                 'escapes, so none can be used to deceive you into running code.')
 
     def _update_security_indicator(self):
@@ -2212,19 +2214,22 @@ class MainWindow(QMainWindow):
             self._theme_actions[key] = act
 
         # Mutually-exclusive display modes as a colour-coded segmented control.
-        # Ordered Strip, Reveal, Detail, Show so Strip and Show are never
-        # adjacent. Strip, Reveal and Detail are green (all safe): Strip replaces
+        # Ordered Box, Reveal, Detail, Show so Box and Show are never
+        # adjacent. Box, Reveal and Detail are green (all safe): Box replaces
         # non-ASCII with a coloured box, hard to miss though lossy; Reveal/Detail
         # show the exact codepoint. Show is red (a rendered glyph can deceive).
         mode_menu = view_menu.addMenu('&Unicode')
+        mode_menu.addSection('Changes DISPLAY, not bytes piped elsewhere')
         self._mode_group = QActionGroup(self)
         self._mode_group.setExclusive(True)
         self._mode_actions = {}
         for label, key, colour, tip in (
-            ('&Strip', 'strip', '#1f8a54',
-             'Non-ASCII output becomes a coloured box (by risk class): safe and '
-             'hard to miss, though lossy -- you see that something was stripped, '
-             'not which codepoint. Reveal shows the exact <U+XXXX>.'),
+            ('&Box', 'strip', '#1f8a54',
+             'Non-ASCII OUTPUT is drawn as a coloured box (by risk class): safe and '
+             'hard to miss, though lossy -- you see something was there, not which '
+             'codepoint (Reveal shows the exact <U+XXXX>). A DISPLAY setting only: it '
+             'does not change bytes a program pipes elsewhere, so "cat file | bash" '
+             'still runs the file.'),
             ('&Reveal', 'reveal', '#1f8a54',
              'Show every non-ASCII character as a <U+XXXX> badge: safe and '
              'lossless, you see the exact codepoint, nothing can pose as a '
@@ -2766,7 +2771,7 @@ class MainWindow(QMainWindow):
         form.addRow('Zoom', zoom)
 
         mode = QComboBox()
-        for label, key in (('Strip (safe)', 'strip'), ('Reveal unicode', 'reveal'),
+        for label, key in (('Box (safe)', 'strip'), ('Reveal unicode', 'reveal'),
                            ('Detail (named)', 'detail'), ('Show unicode', 'show')):
             mode.addItem(label, key)
         mode.setCurrentIndex(mode.findData(self._default_mode))
@@ -2887,7 +2892,7 @@ class MainWindow(QMainWindow):
         self._persist()
 
     # A labelled, bordered group of mutually-exclusive chip buttons -- the
-    # visible, self-explaining form of a setting (e.g. "unicode: Strip Reveal
+    # visible, self-explaining form of a setting (e.g. "unicode: Box Reveal
     # Show"). Makes the setting's NAME and its options obvious to a new user,
     # where a bare row of toggle icons did not. Returns (frame, {key: button}).
     _CHIP_CSS = (
@@ -2912,7 +2917,7 @@ class MainWindow(QMainWindow):
         buttons = {}
         # Style the FRAME (so its border and every descendant chip is covered);
         # per-chip checked colour is an object-name rule in the same sheet, so a
-        # mode chip keeps its safety colour code (Strip yellow, Reveal green,
+        # mode chip keeps its safety colour code (Box green, Reveal green,
         # Show red).
         css = self._CHIP_CSS
         for key, label, colour, tip in specs:
@@ -2926,7 +2931,7 @@ class MainWindow(QMainWindow):
             # from blinking (it looks like the cursor vanished).
             btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             # A safety-coloured dot (the old toolbar symbol) on the risk-bearing
-            # chips: yellow Strip, green Reveal, red Show, yellow TUI. It shows the
+            # chips: green Box, green Reveal, red Show, yellow TUI. It shows the
             # risk colour at a glance even when the chip is not the selected one.
             if colour:
                 btn.setIcon(_dot_icon(colour))
@@ -2980,11 +2985,11 @@ class MainWindow(QMainWindow):
                              QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
 
-        # unicode display mode: Strip (yellow, lossy) / Reveal (green, lossless) /
+        # unicode display mode: Box (green, lossy) / Reveal (green, lossless) /
         # Show (red, a glyph can deceive). Grouped and labelled so it is obvious
         # these three are one unicode setting.
         uni_frame, self._mode_buttons = self._chip_group('unicode:', (
-            ('strip', 'Strip', '#1f8a54', self.act_strip.toolTip()),
+            ('strip', 'Box', '#1f8a54', self.act_strip.toolTip()),
             ('reveal', 'Reveal', '#1f8a54', self.act_reveal.toolTip()),
             ('detail', 'Detail', '#1f8a54', self.act_detail.toolTip()),
             ('show', 'Show', '#d83933', self.act_show.toolTip()),

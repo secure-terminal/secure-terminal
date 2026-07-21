@@ -563,7 +563,7 @@ def cells_to_runs(lines, current, mode, colors, markings=True, wraps=None):
     def emit(ch, key):
         disp = render_output(ch, mode)
         if mode == 'strip' and disp == '_' and disp != ch:
-            # Strip mode neutralizes EVERY non-ASCII byte to the placeholder, so
+            # Box mode neutralizes EVERY non-ASCII byte to the placeholder, so
             # the box is unambiguously a placeholder here (Show/Detail can hold a
             # real box glyph, so leave those as '_'); the widget maps it back to
             # '_' on export in strip mode only.

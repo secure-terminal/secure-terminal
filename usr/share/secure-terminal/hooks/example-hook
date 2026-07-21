@@ -43,10 +43,19 @@ import hooklib          # noqa: E402  pylint: disable=wrong-import-position
 # if allowed) documents/edits them in example-hook-rules.conf. Piping a
 # downloaded script into a privileged shell is the classic supply-chain footgun.
 _DEFAULT_RULES = [
-    ('block', r'\b(curl|wget)\b.*\|\s*sudo\s+(ba)?sh\b',
+    ('block', r'\b(curl|wget|fetch)\b.*\|\s*sudo\s+(ba)?sh\b',
      'Refusing to pipe a downloaded script into a root shell.', ''),
-    ('ask', r'\b(curl|wget)\b.*\|\s*(ba)?sh\b',
+    ('ask', r'\b(curl|wget|fetch)\b.*\|\s*(ba)?sh\b',
      'This pipes a downloaded script straight into a shell. Read it first.', ''),
+    # Untrusted file -> shell: the same footgun as curl|sh but for a file you
+    # already have (viewing "install docs" then piping them into a shell). A
+    # homoglyph/bidi/hidden-byte doc could carry commands you never read.
+    ('block', r'\b(cat|tac|zcat|xzcat|bzcat|head|tail|xxd|base64|dd)\b.*\|\s*sudo\s+(ba)?sh\b',
+     'Refusing to pipe a file straight into a root shell -- its contents would run as root.', ''),
+    ('ask', r'\b(cat|tac|zcat|xzcat|bzcat|head|tail|xxd|base64|dd)\b.*\|\s*(ba)?sh\b',
+     'This pipes a file straight into a shell -- its contents run as commands. Read it first.', ''),
+    ('ask', r'\b(ba)?sh\b\s+<\(',
+     'This runs the output of a command as a script (process substitution). Read it first.', ''),
     ('ask', r'\bgit\s+push\b.*(--force|(\s|=)-f\b)',
      'A force-push can overwrite history on the remote.', ''),
     ('ask', r'^\s*sudo\b', 'This runs with root privileges.', ''),
