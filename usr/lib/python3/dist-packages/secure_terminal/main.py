@@ -1072,7 +1072,7 @@ class MainWindow(QMainWindow):
             term.reset_caret()
             term.setFocus()
 
-    # -- paste review (the in-window bar; replaces the old modal dialog) -------
+    # -- paste review (the in-window bar) -------------------------------------
     def _show_paste_review(self, term, raw, delay):
         """A tab is holding a risky paste: show the review bar for it. Only the
         active tab can be pasting into, so a background tab's request is ignored

@@ -6,9 +6,9 @@
 """The in-window paste-review bar.
 
 When a paste carries unicode or control characters, the terminal HOLDS it and asks
-the window to show this bar (docked at the bottom, like the find bar) instead of a
-separate modal window -- one window, and the preview reuses the terminal's own
-renderer so risk-class colouring and click-to-inspect come for free.
+the window to show this bar (docked at the bottom, like the find bar). The preview
+reuses the terminal's own renderer, so risk-class colouring and click-to-inspect
+come for free.
 
 The bar shows a one-line summary of what is hidden and, on the Detail toggle, four
 read-only preview panes -- Original (how it looks), Detail (each hidden character

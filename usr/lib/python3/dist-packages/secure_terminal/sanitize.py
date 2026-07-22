@@ -362,6 +362,22 @@ def wants_screen_repaint(text):
     return _NEEDS_SCREEN_REPAINT.search(text) is not None
 
 
+# A whole-screen clear or a full terminal reset: erase-display of the ENTIRE
+# screen (ED2) or the scrollback (ED3), or RIS (ESC c). Line mode is append-only
+# and tamper-evident -- nothing may erase what was already shown -- so it drops
+# these; the widget notes it once per tab so a `clear` / Ctrl+L / `reset` that did
+# nothing is explained rather than just silently ignored. ED0/ED1 (erase from the
+# cursor) are deliberately excluded: a shell's line editor emits ED0 on an
+# ordinary prompt redraw, which is not a screen clear.
+_CLEAR_SCREEN = re.compile(r'\x1b\[[23]J|\x1bc')
+
+
+def wants_clear(text):
+    """True when output tries to clear the whole screen or reset the terminal (ED2,
+    ED3 or RIS) -- a no-op in append-only line mode, worth a one-time note."""
+    return _CLEAR_SCREEN.search(text) is not None
+
+
 def sanitize_bytes(data, mode='box'):
     """Convenience wrapper: decode raw bytes 1:1 (latin-1) and render. Used by
     tests and any all-ASCII path; the live output stream uses an incremental

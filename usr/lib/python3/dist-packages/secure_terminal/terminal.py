@@ -118,7 +118,7 @@ from secure_terminal.sanitize import (
     sanitize_paste_unicode,
     paste_findings, tui_cell, sanitize_title,
     feed_line_edits, cells_to_runs, cells_display_col, MARK_KEY, WRAP_NL, BOX,
-    wants_full_screen, leaves_full_screen, wants_screen_repaint,
+    wants_full_screen, leaves_full_screen, wants_screen_repaint, wants_clear,
     describe_codepoint, marking_class, PROMPT_START,
     split_trailing_escape, feed_chunk_carry, has_bell, OSC_FEATURES,
     _ALT_SCREEN as _ALT_ENTER, _ALT_SCREEN_OFF as _ALT_LEAVE,
@@ -477,6 +477,9 @@ class SecureTerminal(QPlainTextEdit):
         # show the "this program wants TUI mode" advisory at most once per
         # full-screen program, so one that redraws every second does not spam it.
         self._tui_hint_shown = False
+        # note a whole-screen clear / reset that line mode drops, at most once per
+        # tab, so a `clear` / Ctrl+L / `reset` that did nothing is explained.
+        self._clear_notice_shown = False
         # True while a full-screen program holds the alternate screen buffer. The
         # pyte screen is then kept fed in the background even in line mode, so
         # flipping to TUI mode shows the program's current frame instantly (no
@@ -1472,6 +1475,19 @@ class SecureTerminal(QPlainTextEdit):
                          'interface, or a completion menu or progress display that '
                          'repaints -- which the safe CLI mode cannot show. Turn on '
                          'TUI mode to see it.')
+        # A whole-screen clear or reset (from `clear`, Ctrl+L or `reset`) is a
+        # no-op here BY DESIGN: line mode is append-only, so nothing -- not a
+        # program, not a stray clear -- can erase what you have already seen. Note
+        # it once per tab, so a clear that "did nothing" is explained rather than
+        # a silent surprise. Skipped when a full-screen or repainting program is on
+        # (its own TUI advisory covers it, and there its clear is part of drawing).
+        elif (not self._clear_notice_shown and wants_clear(text)
+                and not entered and not wants_screen_repaint(text)):
+            self._clear_notice_shown = True
+            self._advise('A program tried to clear the screen. The safe CLI mode '
+                         'keeps output append-only, so nothing can erase what you '
+                         'have already seen. Turn on TUI mode if you need a program '
+                         'to control the screen.')
 
     def _feed_stream(self, data):
         """Feed bytes to pyte, handling alternate-screen enter/leave INLINE so the

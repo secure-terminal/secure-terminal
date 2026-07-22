@@ -43,8 +43,8 @@ It does nothing about the programs you deliberately run.
 - **Sanitized paste, with a review.** Pasted text is stripped to printable
   ASCII before it reaches the shell, so invisible or bidi characters never enter
   your command line. When a paste actually contains unicode or control
-  characters, a review bar opens inside the window (no separate pop-up), holds
-  the paste, and shows it four ways side by side: the original as it looks, a
+  characters, a review bar opens inside the window, holds the paste, and shows
+  it four ways side by side: the original as it looks, a
   Detail rendering that names every hidden character inline, and exactly what
   each send button would deliver (stripped to ASCII, or with printable unicode
   kept). The panes are rendered by the terminal's own pipeline, so each hidden
