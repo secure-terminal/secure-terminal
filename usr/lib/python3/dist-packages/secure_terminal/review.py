@@ -34,6 +34,15 @@ from secure_terminal.sanitize import (
 )
 from secure_terminal.terminal import SecureTerminal
 
+# Semantic button/dot colours: the app's canonical safe-green and caution-red (the
+# same values the mode lamps and risk dots use). Chosen to clear the contrast guard
+# (sanitize.too_close) against BOTH the light and the dark theme background, so the
+# send buttons and the risk dot stay readable whatever the desktop palette -- unlike
+# a foreground-only tint tuned for one theme. Pinned as constants so test_review.py
+# can assert the contrast directly.
+SAFE_FG = '#1f8a54'
+RISK_FG = '#d83933'
+
 # (display mode, risk-class colouring?) for the four preview panes, in order.
 _PANE_RENDER = (
     ('show', False),      # Original -- how it looks, deceptive, untinted
@@ -98,7 +107,7 @@ class ReviewBar(QWidget):
         row.setSpacing(8)
         dot = QLabel(self)
         dot.setFixedSize(14, 14)
-        dot.setStyleSheet('background-color:#d83933; border-radius:7px;')
+        dot.setStyleSheet('background-color:%s; border-radius:7px;' % RISK_FG)
         row.addWidget(dot)
         self._summary = QLabel('', self)
         self._summary.setStyleSheet('font-weight:bold;')
@@ -115,11 +124,11 @@ class ReviewBar(QWidget):
         self._reject.clicked.connect(lambda: self._choose('reject'))
         row.addWidget(self._reject)
         self._stripped = QPushButton('Paste stripped', self)
-        self._stripped.setStyleSheet('color:#0a5c37; font-weight:600;')
+        self._stripped.setStyleSheet('color:%s; font-weight:600;' % SAFE_FG)
         self._stripped.clicked.connect(lambda: self._choose('stripped'))
         row.addWidget(self._stripped)
         self._unicode = QPushButton('Paste with unicode', self)
-        self._unicode.setStyleSheet('color:#b1170f; font-weight:600;')
+        self._unicode.setStyleSheet('color:%s; font-weight:600;' % RISK_FG)
         self._unicode.clicked.connect(lambda: self._choose('unicode'))
         row.addWidget(self._unicode)
         outer.addLayout(row)
