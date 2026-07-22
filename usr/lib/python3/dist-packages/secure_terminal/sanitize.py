@@ -442,6 +442,24 @@ _SGR_ONLY_RE = re.compile(r'\x1b\[([0-9;]*)m')
 PROMPT_START = '\x1b[?2004h'
 
 
+def _printable_follows(raw, i):
+    """True if raw[i:] still holds printable text (past any escape sequences and
+    control bytes). Distinguishes a shell that emits the bracketed-paste marker
+    BEFORE its prompt (bash/readline -- prompt text follows) from one that emits
+    it AFTER the prompt (zsh/zle -- nothing print-worthy follows)."""
+    n = len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch == '\x1b':
+            m = ANSI_RE.match(raw, i)
+            i = m.end() if m else i + 1
+            continue
+        if ch >= ' ' and ch != '\x7f':
+            return True
+        i += 1
+    return False
+
+
 def feed_line_edits(cells, col, sgr, raw, max_line=0):
     """Advance the current line's LOGICAL cell buffer by one raw output chunk.
 
@@ -507,16 +525,23 @@ def feed_line_edits(cells, col, sgr, raw, max_line=0):
                 i = m.end()
                 continue
             if raw.startswith(PROMPT_START, i):
-                # A shell prompt is starting. If the finished command left the
-                # cursor mid-line (output with no trailing newline, e.g.
-                # `head -c N /dev/urandom`), end that line so the prompt starts
-                # fresh instead of gluing onto it -- a nicety over stock bash, and
-                # a no-op at column 0 (e.g. zsh's PROMPT_SP already did it).
-                if col != 0:
+                # A shell's line editor toggles bracketed paste around each
+                # prompt, but the emission order differs: bash/readline sends this
+                # marker BEFORE printing the prompt, zsh/zle AFTER it. Only in the
+                # bash order can a command's un-terminated last line still be on
+                # the row with the prompt about to follow -- there, end that line
+                # so the prompt starts fresh instead of gluing onto it (a nicety
+                # over stock bash; a no-op at column 0). In the zsh order the
+                # prompt is ALREADY on the row (zsh's own PROMPT_SP ended any
+                # partial command line), so flushing would push the prompt onto
+                # its own line and drop the cursor below it -- the bug this guard
+                # prevents. Tell them apart by whether prompt text still follows.
+                j = i + len(PROMPT_START)
+                if col != 0 and _printable_follows(raw, j):
                     completed.append(cells)
                     wraps.append(False)
                     cells, col = [], 0
-                i += len(PROMPT_START)
+                i = j
                 continue
             m = ANSI_RE.match(raw, i)
             if m:                                       # any other escape: strip
