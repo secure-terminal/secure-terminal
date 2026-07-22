@@ -28,7 +28,6 @@ from PyQt6.QtWidgets import (
     QTextEdit, QFontDialog, QGroupBox,
 )
 
-from PyQt6.QtNetwork import QLocalServer
 from secure_terminal import settings, session, ipc
 from secure_terminal.sanitize import (
     sanitize_paste, OSC_FEATURES, OSC_FEATURE_BY_KEY, luminance)
@@ -553,17 +552,27 @@ class MainWindow(QMainWindow):
         self._build_security_indicator()
         self._apply_locks()
 
+        # Tabs still awaiting a deferred session restore (see below). Completed
+        # before the session is saved on quit, so no tab is ever dropped.
+        self._deferred_restore = []
         # Launch-CLI tabs take precedence over a restored session: opening
         # `secure-terminal --title x -- htop` should give you exactly that.
         if launch is not None and launch.tabs:
             for spec in launch.tabs:
                 self._open_launch_tab(spec)
         else:
-            # restore the previous session (tabs + scrollback) if enabled
-            restored = session.load() if self._persist_session else []
-            for info in restored:
-                if isinstance(info, dict):
-                    self._restore_tab(info)
+            # Restore the previous session. Rendering a large scrollback is the
+            # dominant startup cost, so restore only the FIRST tab synchronously
+            # (the window opens with content); defer the rest to one-per-event-loop-
+            # turn AFTER the window is shown, so a big multi-tab session no longer
+            # blocks the first paint for seconds.
+            restored = [i for i in (session.load() if self._persist_session else [])
+                        if isinstance(i, dict)]
+            if restored:
+                self._restore_tab(restored[0])
+            self._deferred_restore = restored[1:]
+            if self._deferred_restore:
+                QTimer.singleShot(0, self._restore_next_deferred)
         if self.tabs.count() == 0:
             self.new_tab()
 
@@ -798,6 +807,10 @@ class MainWindow(QMainWindow):
             ipc.ensure_socket_dir()
         except OSError:
             return                          # no runtime dir -> no single instance
+        # imported here, not at module top: the single-instance CLIENT path (a
+        # second launch that hands off and exits) never creates a QApplication and
+        # so should not pay QtNetwork's import cost; only the server needs it.
+        from PyQt6.QtNetwork import QLocalServer   # noqa: PLC0415
         path = ipc.socket_path(group)
         QLocalServer.removeServer(path)     # clear a stale socket, if any
         self._server = QLocalServer(self)
@@ -928,6 +941,17 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
         return {'ok': True, 'opened': opened}
+
+    def _restore_next_deferred(self):
+        """Restore one more deferred session tab, then yield to the event loop
+        before the next -- so a large session's tabs and scrollback render
+        progressively after the window is already up, not before the first paint.
+        Any remainder is finished in closeEvent so no tab is dropped from the save."""
+        if not self._deferred_restore:
+            return
+        self._restore_tab(self._deferred_restore.pop(0))
+        if self._deferred_restore:
+            QTimer.singleShot(0, self._restore_next_deferred)
 
     def _restore_tab(self, info):
         """Recreate a tab from saved session state: its settings, name, colour
@@ -3311,6 +3335,11 @@ class MainWindow(QMainWindow):
 
     # -- lifecycle ------------------------------------------------------------
     def closeEvent(self, event):
+        # Finish any deferred session restore first, so a tab that had not yet been
+        # re-created is not dropped from the saved session (its log would otherwise
+        # be pruned by session.save).
+        while self._deferred_restore:
+            self._restore_tab(self._deferred_restore.pop(0))
         running = sum(1 for i in range(self.tabs.count())
                       if self.tabs.widget(i).has_foreground_program())
         if running and not self._confirm_running_close(
