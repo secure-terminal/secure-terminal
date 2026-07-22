@@ -2263,9 +2263,13 @@ class SecureTerminal(QPlainTextEdit):
         self._line_buffer = ''
         if action == 'suggest' and result['suggestion']:
             # insert the suggested command for review -- never with a newline, so
-            # it never auto-runs; the user presses Enter (and is re-judged).
-            self._write(result['suggestion'].encode('ascii', 'ignore'))
-            self._line_buffer = result['suggestion']
+            # it never auto-runs; the user presses Enter (and is re-judged). The
+            # hook layer already single-lines a suggestion, but strip CR/LF HERE
+            # too so the no-auto-run invariant is enforced at the point of the
+            # write, not only upstream.
+            suggestion = result['suggestion'].replace('\r', ' ').replace('\n', ' ')
+            self._write(suggestion.encode('ascii', 'ignore'))
+            self._line_buffer = suggestion
         return True
 
     def _hook_ask(self, command, result):
