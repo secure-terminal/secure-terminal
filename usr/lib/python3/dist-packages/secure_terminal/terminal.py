@@ -111,7 +111,7 @@ from PyQt6.QtWidgets import (QPlainTextEdit, QToolTip, QDialog, QVBoxLayout,
 
 # The pure, Qt-free sanitization core (also tested directly by dist-ai). Names
 # are re-exported here so terminal.py stays the single import point for the rest
-# of the package (main.py, dialog.py).
+# of the package (main.py, review.py).
 from secure_terminal.sanitize import (
     THEMES, BASE_POINT_SIZE, ANSI_PALETTE, DISPLAY_MODES,
     colors_allowed, too_close, luminance, sanitize_paste,
@@ -316,6 +316,12 @@ class SecureTerminal(QPlainTextEdit):
     # injected into the document: injected text is unfaithful -- it could be
     # selected and copied into a transcript as if a program printed it.
     advise_signal = pyqtSignal(str)
+    # A pasted text needs review before it may reach the shell: (raw, countdown
+    # seconds). The window shows the in-window review bar; the paste is held and
+    # input suspended until dispatch_pending_paste resolves it. resolved fires when
+    # the choice is made (send or reject), so the window can hide the bar.
+    paste_review_requested = pyqtSignal(str, int)
+    paste_review_resolved = pyqtSignal()
     # a program emitted an OSC escape (window title, clipboard, hyperlink, ...)
     # while in line mode, where it is stripped for safety. Carries the FEATURE KEY
     # (see OSC_FEATURES; 'osc_other' for an unrecognized code) so the window can
@@ -334,8 +340,17 @@ class SecureTerminal(QPlainTextEdit):
     clipboard_read_requested = pyqtSignal()
 
     def __init__(self, parent=None, command=None, tui=False, history='',
-                 cli_terminfo=False):
+                 cli_terminfo=False, preview=False):
         super().__init__(parent)
+        # A preview instance renders text through the SAME pipeline (risk-class
+        # colouring, the inspect popup, the contrast guard, theme and font) but runs
+        # NO child: it spawns no pty and accepts no keyboard input, so the paste
+        # review can show the terminal's real rendering without a shell behind it.
+        self._preview = bool(preview)
+        # A pasted text held awaiting the user's review choice (see
+        # insertFromMimeData); while active, terminal input is suspended.
+        self._pending_paste = None
+        self._review_active = False
         self.setUndoRedoEnabled(False)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         # A terminal never scrolls sideways: line mode wraps at the widget width and
@@ -529,6 +544,10 @@ class SecureTerminal(QPlainTextEdit):
         self._notifier = None
         self._fd = None
         self._pid = None
+        if self._preview:
+            # No child, no keyboard: a read-only rendering surface only.
+            self.setReadOnly(True)
+            return
         self._start(command)
         if self._tui:
             # A tab that STARTS in TUI must enter the grid view properly (seed the
@@ -536,6 +555,20 @@ class SecureTerminal(QPlainTextEdit):
             # scrollbar), or the first output would clear the history unseeded and a
             # later switch to CLI would not rebuild the line document.
             self._sync_display()
+
+    def render_preview(self, text, mode='detail', markings=True):
+        """Render `text` as a static, read-only preview in the chosen display mode,
+        replacing any previous content. Reuses the live rendering pipeline, so the
+        preview carries the same risk-class colouring and the same click-to-inspect
+        popup as the terminal itself. Preview instances only."""
+        self.clear()
+        self._raw = ''
+        self._line_cells = []
+        self._line_col = 0
+        self._line_fmt_cache = {}
+        self._mode = mode if mode in DISPLAY_MODES else 'detail'
+        self._markings = bool(markings)
+        self._feed_line(text)
 
     # -- appearance: theme + zoom ---------------------------------------------
     def apply_theme(self, theme):
@@ -1976,6 +2009,19 @@ class SecureTerminal(QPlainTextEdit):
     _LINE_KEYS = None     # line-mode cursor/history keys, built lazily
 
     def keyPressEvent(self, event):
+        if self._preview:
+            # A preview has no child to type to; defer to the read-only base so
+            # selection, copy and scrolling still work, but nothing is ever sent.
+            super().keyPressEvent(event)
+            return
+        if self._review_active:
+            # A pasted text is held for review: input is suspended so a stray key
+            # can never leak into the shell or fire the paste. Enter or Esc rejects
+            # (the safe default); everything else is swallowed until a choice.
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter,
+                               Qt.Key.Key_Escape):
+                self.dispatch_pending_paste('reject')
+            return
         key = event.key()
         mods = event.modifiers()
         ctrl = mods & Qt.KeyboardModifier.ControlModifier
@@ -2409,19 +2455,44 @@ class SecureTerminal(QPlainTextEdit):
     # -- paste: warn on, then sanitize, anything unusual ----------------------
     def insertFromMimeData(self, source):
         raw = source.text()
-        # When to show the paste-warning dialog, per the paste_warn setting:
+        # When to review the paste, per the paste_warn setting:
         #   'always'  -- every paste (even plain ASCII);
         #   'unicode' -- only when the clipboard carries unicode or control
         #                characters, the case worth a second look (the default);
         #   'never'   -- never prompt; the paste is still sanitized silently.
+        # A review is ASYNCHRONOUS: rather than block on a modal, HOLD the paste,
+        # ask the window to show the in-window review bar, and suspend terminal
+        # input until a choice dispatches or rejects it (dispatch_pending_paste).
+        # The hard gate is preserved -- no byte reaches the shell until you choose.
         has_unicode, has_control = paste_findings(raw)
-        action = 'stripped'
         warn = self._paste_warn
         if warn == 'always' or (warn == 'unicode' and (has_unicode or has_control)):
-            from secure_terminal.dialog import PasteWarningDialog
-            action = PasteWarningDialog.confirm(raw, self._paste_delay, self)
-            if action == 'reject':
-                return
+            self._pending_paste = raw
+            self._review_active = True
+            self.paste_review_requested.emit(raw, int(self._paste_delay))
+            return
+        # No review needed ('never', or a clean paste in 'unicode' mode): sanitize
+        # to ASCII and send straight through, as before.
+        self._dispatch_paste(raw, 'stripped')
+
+    def dispatch_pending_paste(self, action):
+        """Resolve a held paste review: 'stripped' or 'unicode' sends it (sanitized
+        accordingly), 'reject' drops it. Re-enables input and tells the window to
+        hide the review bar either way. A no-op if no review is pending."""
+        if not self._review_active:
+            return
+        raw = self._pending_paste
+        self._pending_paste = None
+        self._review_active = False
+        self.paste_review_resolved.emit()
+        if raw is not None and action != 'reject':
+            self._dispatch_paste(raw, action)
+
+    def review_pending(self):
+        """True while a pasted text is held awaiting the user's review choice."""
+        return self._review_active
+
+    def _dispatch_paste(self, raw, action):
         # 'unicode' keeps printable non-ASCII (still no control/bidi/zero-width);
         # 'stripped' is ASCII only. Both are safe to send as UTF-8.
         safe = (sanitize_paste_unicode(raw) if action == 'unicode'

@@ -36,6 +36,7 @@ from secure_terminal.terminal import (
     SecureTerminal, THEMES, DISPLAY_MODES, tui_available,
     sound_file_allowed, BELL_SOUND_DIRS, DEFAULT_FONT_FAMILY,
 )
+from secure_terminal.review import PasteReviewBar
 
 TUI_TOOLTIP = (
     'TUI mode runs full-screen programs (ssh, vim, htop, tmux) by '
@@ -507,7 +508,9 @@ class MainWindow(QMainWindow):
         col.setSpacing(0)
         self._banner = self._make_banner()
         self._find_bar = FindBar(self)
+        self._review_bar = PasteReviewBar(self)
         col.addWidget(self.tabs)
+        col.addWidget(self._review_bar)
         col.addWidget(self._find_bar)
         col.addWidget(self._banner)
         self.setCentralWidget(central)
@@ -576,6 +579,10 @@ class MainWindow(QMainWindow):
             lambda t=term: self._on_clipboard_read_requested(t))
         term.advise_signal.connect(lambda msg, t=term: self._on_advise(t, msg))
         term.osc_used.connect(lambda key, t=term: self._on_osc_used(t, key))
+        term.paste_review_requested.connect(
+            lambda raw, delay, t=term: self._show_paste_review(t, raw, delay))
+        term.paste_review_resolved.connect(
+            lambda t=term: self._hide_paste_review(t))
         index = self.tabs.addTab(term, term.cwd_basename() or 'shell')
         self.tabs.setCurrentIndex(index)
         # auto-colour the new tab so it differs from its neighbour, unless one is
@@ -1063,6 +1070,22 @@ class MainWindow(QMainWindow):
         term = self.current()
         if term is not None:
             term.reset_caret()
+            term.setFocus()
+
+    # -- paste review (the in-window bar; replaces the old modal dialog) -------
+    def _show_paste_review(self, term, raw, delay):
+        """A tab is holding a risky paste: show the review bar for it. Only the
+        active tab can be pasting into, so a background tab's request is ignored
+        (its paste stays held until it is focused and resolved)."""
+        if term is not self.current():
+            return
+        self._review_bar.show_review(term, raw, delay)
+
+    def _hide_paste_review(self, term):
+        """The paste was resolved (sent or rejected): hide the bar and return focus
+        to the terminal so typing resumes."""
+        self._review_bar.hide_review()
+        if term is self.current():
             term.setFocus()
 
     def _find_flags(self):

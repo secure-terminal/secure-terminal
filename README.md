@@ -40,12 +40,17 @@ It does nothing about the programs you deliberately run.
 - **No escape-sequence interpretation.** There is no ANSI parser to attack. The
   terminal advertises `TERM=dumb` and honors no cursor moves, colors, alternate
   screens or OSC hyperlinks from the child process.
-- **Sanitized paste, with a warning.** Pasted text is stripped to printable
+- **Sanitized paste, with a review.** Pasted text is stripped to printable
   ASCII before it reaches the shell, so invisible or bidi characters never enter
   your command line. When a paste actually contains unicode or control
-  characters, a dialog first shows it two ways side by side, the original and a
-  Reveal rendering that makes every hidden character visible, and holds the
-  Allow button disabled for a few seconds (configurable) so a stray Enter cannot
+  characters, a review bar opens inside the window (no separate pop-up), holds
+  the paste, and shows it four ways side by side: the original as it looks, a
+  Detail rendering that names every hidden character inline, and exactly what
+  each send button would deliver (stripped to ASCII, or with printable unicode
+  kept). The panes are rendered by the terminal's own pipeline, so each hidden
+  character wears its risk-class colour and stays click-to-inspect. While the
+  paste is held, terminal input is suspended and both send buttons are
+  countdown-gated (configurable; Enter or Esc rejects), so a stray key cannot
   wave a hostile paste through. A plain-ASCII paste is not interrupted.
 - **Tiny input allowlist.** You type printable ASCII plus a small set of control
   keys that the pseudo-terminal turns into signals:
