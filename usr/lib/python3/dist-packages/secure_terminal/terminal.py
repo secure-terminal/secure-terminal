@@ -2547,6 +2547,7 @@ class SecureTerminal(QPlainTextEdit):
         on the clipboard is the very hazard this terminal guards against."""
         dlg = QDialog(self)
         dlg.setWindowTitle('Character U+%04X' % cp)
+        dlg.setMinimumWidth(340)        # roomy enough to read the description
         col = QVBoxLayout(dlg)
         info = QLabel(describe_codepoint(cp) + '\nRisk: '
                       + _RISK_LABELS.get(marking_class(cp), marking_class(cp)), dlg)
@@ -2561,13 +2562,22 @@ class SecureTerminal(QPlainTextEdit):
             'is the exact hazard this terminal guards against.' % esc, dlg)
         note.setTextFormat(Qt.TextFormat.RichText)
         note.setWordWrap(True)
-        note.setStyleSheet('color: palette(mid); font-size: 11px;')
+        # readable (palette(text), not the too-faint palette(mid)) and selectable,
+        # so the explanation can be marked and copied like the rest.
+        note.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        note.setStyleSheet('color: palette(text); font-size: 12px;')
         col.addWidget(note)
         row = QHBoxLayout()
         copy = QPushButton('Copy ' + esc, dlg)
         copy.setToolTip('Copies the %s escape (a safe ASCII representation), '
                         'never the raw character.' % esc)
-        copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(esc))
+
+        def _copy_escape(_checked=False, button=copy, text=esc):
+            QGuiApplication.clipboard().setText(text)
+            button.setText('Copied ' + text)        # confirm it happened
+        copy.clicked.connect(_copy_escape)
         close = QPushButton('Close', dlg)
         close.setDefault(True)
         close.clicked.connect(dlg.close)
