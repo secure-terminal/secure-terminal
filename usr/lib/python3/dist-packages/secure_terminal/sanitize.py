@@ -336,6 +336,32 @@ def leaves_full_screen(text):
     return any(seq in text for seq in _ALT_SCREEN_OFF)
 
 
+# In-place VERTICAL repaint that line mode (append-only, horizontal-local only)
+# cannot draw, but which does NOT use the alternate screen -- so wants_full_screen
+# misses it. The classic case is the shell's own line editor drawing an
+# interactive completion menu (zsh ZLE menu-select, bash/readline menu-complete):
+# it prints the candidate grid then moves the cursor UP to repaint it in place, so
+# in line mode the cursor-up is stripped and the grid piles up as garbage with no
+# hint. Progress displays and full-screen programs that address the cursor without
+# the alt screen behave the same. Detect the two unambiguous tells:
+#   * CUU (cursor up)              -- ESC [ <n> A  : repainting lines above
+#   * CUP/HVP with an explicit ROW AND COLUMN -- ESC [ <r>;<c> H|f : cell addressing
+# Deliberately NOT tripped by things line mode renders fine or that are harmless:
+# a bare `\r` progress bar (one line), CUF/CUB/CHA horizontal moves, EL erase-line,
+# or `clear`/`reset` (ESC [ H then ESC [ 2J -- a bare home + erase-display, no CUU
+# and no row;col address), which line mode simply drops with no loss worth a hint.
+_NEEDS_SCREEN_REPAINT = re.compile(r'\x1b\[[0-9]*A|\x1b\[[0-9]+;[0-9]+[Hf]')
+
+
+def wants_screen_repaint(text):
+    """True when output redraws in place with vertical cursor motion or absolute
+    cell addressing (a completion menu, a progress grid, a cursor-addressed TUI)
+    without using the alternate screen -- which line mode cannot draw and
+    wants_full_screen does not catch. Used, alongside wants_full_screen, to advise
+    TUI mode instead of silently stripping the redraw into garbage."""
+    return _NEEDS_SCREEN_REPAINT.search(text) is not None
+
+
 def sanitize_bytes(data, mode='box'):
     """Convenience wrapper: decode raw bytes 1:1 (latin-1) and render. Used by
     tests and any all-ASCII path; the live output stream uses an incremental

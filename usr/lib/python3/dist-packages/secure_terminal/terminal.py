@@ -118,7 +118,8 @@ from secure_terminal.sanitize import (
     sanitize_paste_unicode,
     paste_findings, tui_cell, sanitize_title,
     feed_line_edits, cells_to_runs, cells_display_col, MARK_KEY, WRAP_NL, BOX,
-    wants_full_screen, leaves_full_screen, describe_codepoint, marking_class, PROMPT_START,
+    wants_full_screen, leaves_full_screen, wants_screen_repaint,
+    describe_codepoint, marking_class, PROMPT_START,
     split_trailing_escape, feed_chunk_carry, has_bell, OSC_FEATURES,
     _ALT_SCREEN as _ALT_ENTER, _ALT_SCREEN_OFF as _ALT_LEAVE,
 )
@@ -1425,13 +1426,19 @@ class SecureTerminal(QPlainTextEdit):
         if len(self._raw) > self._RAW_MAX:
             self._raw = self._raw[-self._RAW_MAX:]     # drop the oldest output
         self._feed_line(text)
-        # A full-screen program (htop, vim) is unusable in line mode -- its
-        # escapes are stripped, leaving garbage. Point the user at TUI mode once.
-        if not self._tui_hint_shown and entered:
+        # A program that draws in place -- a full-screen app (htop, vim, on the
+        # alternate screen) OR an in-place vertical repaint without it (the shell's
+        # interactive completion menu, a progress grid, a cursor-addressed TUI) --
+        # is unusable in line mode, whose append-only renderer strips the redraw and
+        # leaves garbage. Point the user at TUI mode once per such program. The
+        # repaint case (zsh/readline menu-select especially) uses no alternate
+        # screen, so wants_full_screen alone misses it.
+        if not self._tui_hint_shown and (entered or wants_screen_repaint(text)):
             self._tui_hint_shown = True
-            self._advise('This program wants a full-screen interface, which the '
-                         'safe CLI mode cannot draw. Turn on TUI mode to run it '
-                         'here.')
+            self._advise('This program is drawing in place -- a full-screen '
+                         'interface, or a completion menu or progress display that '
+                         'repaints -- which the safe CLI mode cannot show. Turn on '
+                         'TUI mode to see it.')
 
     def _feed_stream(self, data):
         """Feed bytes to pyte, handling alternate-screen enter/leave INLINE so the
