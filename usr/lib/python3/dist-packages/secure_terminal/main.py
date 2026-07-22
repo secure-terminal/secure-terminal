@@ -2966,7 +2966,16 @@ class MainWindow(QMainWindow):
         pdelay = QComboBox()
         for label, secs in PASTE_DELAY_CHOICES:
             pdelay.addItem(label, secs)
-        pdelay.setCurrentIndex(pdelay.findData(self._paste_delay))
+        pidx = pdelay.findData(self._paste_delay)
+        if pidx < 0:
+            # the stored delay (config allows any 0-60) is not one of the presets;
+            # add it as its own item so the combo shows the REAL current value
+            # instead of a blank selection.
+            pdelay.addItem('%d second%s' % (self._paste_delay,
+                                            '' if self._paste_delay == 1 else 's'),
+                           self._paste_delay)
+            pidx = pdelay.count() - 1
+        pdelay.setCurrentIndex(pidx)
         session_box.addRow('Paste delay', pdelay)
 
         persist = QCheckBox()
