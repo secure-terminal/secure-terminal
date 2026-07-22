@@ -112,14 +112,15 @@ source of truth for behaviour.
 
 ## Screenshots (generators already exist - do not hand-roll)
 
-The Pages site's screenshots come from two committed generators; regenerate via
-them rather than painting shots.
+All the Pages site's screenshots are generated from committed code in dist-ai
+(`usr/share/secure-terminal-shots/`), driven by one wrapper -
+`secure-terminal-shots [review|comparison]`. Regenerate via it, do not paint.
 
 - **Review-bar shots** (`shots/paste-warning.png`, `shots/copy-warning.png`):
-  headless Qt grab of the real ReviewBar. Regenerate with dist-ai's
-  `secure-terminal-shots` (drives `paste-warning-shot.py <out.png> [paste|copy]`).
+  headless Qt grab of the real ReviewBar (`secure-terminal-shots review`).
 - **Terminal-comparison shots** (`comparison/shots/*.png`): real Debian terminals
-  under nested labwc, from terminal-poc-corpus `comparison/capture.sh`
-  (`ST_REPO=<checkout>`; needs an X server, so run it in the sandbox).
+  under nested labwc (`secure-terminal-shots comparison`; needs an X server, so
+  run it in the sandbox).
 
-See also the site's `shots/README.md`.
+See dist-ai `usr/share/secure-terminal-shots/README.md` and the site's
+`shots/README.md`.
