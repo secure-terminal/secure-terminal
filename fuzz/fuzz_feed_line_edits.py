@@ -54,7 +54,7 @@ def TestOneInput(data):
             raise RuntimeError(
                 "ESC smuggled into a cell: input={0!r}".format(text))
 
-    runs, prefix = cells_to_runs(comp, cells, 'strip', False)
+    runs, prefix = cells_to_runs(comp, cells, 'box', False)
     if not (isinstance(prefix, int) and prefix >= 0):
         raise RuntimeError(
             "cells_to_runs bad prefix {0!r}: input={1!r}".format(prefix, text))
@@ -67,7 +67,7 @@ def TestOneInput(data):
                 "cells_to_runs strip run not safe: input={0!r} run={1!r}".format(
                     text, run_text))
 
-    if cells_display_col(cells, col, 'strip') < 0:
+    if cells_display_col(cells, col, 'box') < 0:
         raise RuntimeError(
             "cells_display_col negative: input={0!r}".format(text))
 

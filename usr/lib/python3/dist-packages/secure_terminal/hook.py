@@ -38,7 +38,7 @@ def _sanitize_message(text):
     """Advisory text is DISPLAYED, so strip escapes and non-ASCII and cap it."""
     if not text:
         return ''
-    return render_output(str(text), 'strip')[:2000]
+    return render_output(str(text), 'box')[:2000]
 
 
 def _sanitize_suggestion(text):

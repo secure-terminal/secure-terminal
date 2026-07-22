@@ -1474,7 +1474,7 @@ class MainWindow(QMainWindow):
                     self._advisories.pop(term, None)
                     self._refresh_banner()
                 # Any non-'show' mode makes a TUI unreadable (box-drawing becomes
-                # '_' in strip, or a badge in reveal/detail that breaks the grid),
+                # a box in Box mode, or a badge in reveal/detail that breaks the grid),
                 # so lean this TAB to 'show'. Do it on the term only -- NOT via
                 # set_mode, which would persist 'show' as the global default for
                 # every future tab -- and remember the prior mode so turning TUI
@@ -1559,7 +1559,7 @@ class MainWindow(QMainWindow):
         <U+XXXX> codepoint is shown (green). Box is safe too -- non-ASCII becomes
         a coloured box, hard to miss (green); lossy, but nothing deceptive."""
         term = self.current()
-        mode = term.current_mode() if term is not None else 'strip'
+        mode = term.current_mode() if term is not None else 'box'
         if mode == 'show':
             return ('#d83933', 'Show',
                     'Display: SHOW (red).\n\n'
@@ -2245,7 +2245,7 @@ class MainWindow(QMainWindow):
         self._mode_group.setExclusive(True)
         self._mode_actions = {}
         for label, key, colour, tip in (
-            ('&Box', 'strip', '#1f8a54',
+            ('&Box', 'box', '#1f8a54',
              'Non-ASCII OUTPUT is drawn as a coloured box (by risk class): safe and '
              'hard to miss, though lossy -- you see something was there, not which '
              'codepoint (Reveal shows the exact <U+XXXX>). A DISPLAY setting only: it '
@@ -2272,7 +2272,7 @@ class MainWindow(QMainWindow):
             self._mode_group.addAction(act)
             mode_menu.addAction(act)
             self._mode_actions[key] = act
-        self.act_strip = self._mode_actions['strip']
+        self.act_box = self._mode_actions['box']
         self.act_reveal = self._mode_actions['reveal']
         self.act_detail = self._mode_actions['detail']
         self.act_show = self._mode_actions['show']
@@ -2742,7 +2742,7 @@ class MainWindow(QMainWindow):
     _COMMAND_HELP = (
         'Slash commands (the leading / is optional):\n\n'
         '  /theme dark|light\n'
-        '  /mode strip|show|reveal\n'
+        '  /mode box|show|reveal\n'
         '  /colors on|off\n'
         '  /tui on|off\n'
         '  /title on|off\n'
@@ -2815,7 +2815,7 @@ class MainWindow(QMainWindow):
         form.addRow('Zoom', zoom)
 
         mode = QComboBox()
-        for label, key in (('Box (safe)', 'strip'), ('Reveal unicode', 'reveal'),
+        for label, key in (('Box (safe)', 'box'), ('Reveal unicode', 'reveal'),
                            ('Detail (named)', 'detail'), ('Show unicode', 'show')):
             mode.addItem(label, key)
         mode.setCurrentIndex(mode.findData(self._default_mode))
@@ -3033,7 +3033,7 @@ class MainWindow(QMainWindow):
         # Show (red, a glyph can deceive). Grouped and labelled so it is obvious
         # these three are one unicode setting.
         uni_frame, self._mode_buttons = self._chip_group('unicode:', (
-            ('strip', 'Box', '#1f8a54', self.act_strip.toolTip()),
+            ('box', 'Box', '#1f8a54', self.act_box.toolTip()),
             ('reveal', 'Reveal', '#1f8a54', self.act_reveal.toolTip()),
             ('detail', 'Detail', '#1f8a54', self.act_detail.toolTip()),
             ('show', 'Show', '#d83933', self.act_show.toolTip()),

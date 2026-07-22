@@ -51,14 +51,14 @@ def TestOneInput(data):
             raise RuntimeError(
                 "render_output leaked dangerous cp in mode {0}: input={1!r} "
                 "leaked={2!r}".format(mode, text, leaked))
-        if mode in ('strip', 'reveal'):
+        if mode in ('box', 'reveal'):
             unsafe = [ch for ch in out if ord(ch) not in _SAFE]
             if unsafe:
                 raise RuntimeError(
                     "render_output left non-SAFE in mode {0}: input={1!r} "
                     "unsafe={2!r}".format(mode, text, unsafe))
-    strip = render_output(text, 'strip')
-    again = render_output(strip, 'strip')
+    strip = render_output(text, 'box')
+    again = render_output(strip, 'box')
     if strip != again:
         raise RuntimeError(
             "render_output strip not idempotent: input={0!r} once={1!r} "

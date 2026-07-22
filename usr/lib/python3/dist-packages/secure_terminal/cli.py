@@ -131,10 +131,10 @@ def main(argv=None):
         description='Run a command or your shell in a sanitizing terminal '
                     'wrapper: escape sequences are removed and non-ASCII output '
                     'is neutralized before it reaches your terminal.')
-    parser.add_argument('--mode', choices=DISPLAY_MODES, default='strip',
-                        help="how to show non-ASCII output: strip (safe default, "
-                             "non-ASCII becomes '_'), show (render printable "
-                             "glyphs), reveal (<U+XXXX> badges)")
+    parser.add_argument('--mode', choices=DISPLAY_MODES, default='box',
+                        help="how to show non-ASCII output: box (safe default, "
+                             "non-ASCII becomes '_' in the CLI), show (render "
+                             "printable glyphs), reveal (<U+XXXX> badges)")
     parser.add_argument('command', nargs=argparse.REMAINDER,
                         help='command to run (default: your login shell)')
     args = parser.parse_args(argv)

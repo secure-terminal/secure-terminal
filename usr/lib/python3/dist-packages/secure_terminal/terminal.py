@@ -10,7 +10,7 @@ Design (see https://secure-terminal.github.io):
 
 - DISPLAY is printable-ASCII by default. Program output is passed through
   render_output(): ANSI/OSC escape sequences are removed and, in the default
-  'strip' mode, every character that is not printable ASCII (plus tab and
+  'box' mode, every character that is not printable ASCII (plus tab and
   newline) becomes '_', the way sanitize-string/stcat neutralize a log. There is
   no escape parser, so a hostile filename, a forged status line or a Trojan-
   Source comment cannot redraw or reorder what you read. Two optional display
@@ -117,7 +117,7 @@ from secure_terminal.sanitize import (
     colors_allowed, too_close, luminance, sanitize_paste,
     sanitize_paste_unicode,
     paste_findings, tui_cell, sanitize_title,
-    feed_line_edits, cells_to_runs, cells_display_col, MARK_KEY, WRAP_NL, STRIP_BOX,
+    feed_line_edits, cells_to_runs, cells_display_col, MARK_KEY, WRAP_NL, BOX,
     wants_full_screen, leaves_full_screen, describe_codepoint, marking_class, PROMPT_START,
     split_trailing_escape, feed_chunk_carry, has_bell, OSC_FEATURES,
     _ALT_SCREEN as _ALT_ENTER, _ALT_SCREEN_OFF as _ALT_LEAVE,
@@ -125,7 +125,7 @@ from secure_terminal.sanitize import (
 
 # Custom char-format property carrying a marked cell's SOURCE code point, so the
 # widget can describe the real character on hover/click regardless of how it is
-# displayed (the strip "_", a reveal/detail badge, a control shown as "_").
+# displayed (the box placeholder, a reveal/detail badge, a control as a box).
 # The default terminal font. Hack is a monospace face DESIGNED to disambiguate
 # confusable glyphs (dotted zero distinct from O, tailed l, serifed 1 and I,
 # rn kept apart from m) and -- crucially for a terminal that promises "what you
@@ -353,7 +353,7 @@ class SecureTerminal(QPlainTextEdit):
 
         # display mode for non-ASCII output, and an incremental UTF-8 decoder so
         # a multi-byte character split across two os.read() chunks still decodes.
-        self._mode = 'strip'
+        self._mode = 'box'
         self._decoder = codecs.getincrementaldecoder('utf-8')('replace')
         # Retain the raw decoded output (line mode) so a display-mode change can
         # re-render the WHOLE buffer, not just new output. Bounded so a flood
@@ -594,7 +594,7 @@ class SecureTerminal(QPlainTextEdit):
     def apply_mode(self, mode):
         """Set the display mode for non-ASCII output and re-render the existing
         buffer under it -- a mode change affects the whole scrollback, not only
-        new output, so toggling strip/show/reveal re-reads what is already there."""
+        new output, so toggling box/show/reveal re-reads what is already there."""
         if mode not in DISPLAY_MODES or mode == self._mode:
             return
         self._mode = mode
@@ -1824,12 +1824,15 @@ class SecureTerminal(QPlainTextEdit):
         self.ensureCursorVisible()
 
     def _export_ascii(self, text):
-        """Map the display box (STRIP_BOX) back to ASCII '_' for any text that
-        LEAVES the widget (copy, save transcript, command hook, session restore),
-        so everything you copy or save is pure ASCII. The box is only ever a
-        placeholder in strip mode (Show/Detail can hold a real box glyph), so map
-        only there."""
-        return text.replace(STRIP_BOX, '_') if self._mode == 'strip' else text
+        """Map the display box (BOX) back to ASCII '_' for any text that LEAVES the
+        widget (copy, save transcript, command hook, session restore), so everything
+        you copy or save is pure ASCII. Map only in Box mode, where every non-ASCII
+        byte is a placeholder. Show mode also draws a box for no-glyph characters
+        (invisible / bidi / control), but there a box may equally be a real U+25A1
+        the program printed -- both copy safely as the box itself -- and Show mode is
+        the opt-in to copy real unicode, so leave its text untouched. Reveal / Detail
+        carry <U+XXXX> badges, already ASCII."""
+        return text.replace(BOX, '_') if self._mode == 'box' else text
 
     def toPlainText(self):
         # Overrides QPlainTextEdit.toPlainText so every external text getter
@@ -2080,7 +2083,7 @@ class SecureTerminal(QPlainTextEdit):
         # deceptive classes cannot ride in this way: str.isprintable() is False
         # for control, bidi, zero-width and format characters, and those are not
         # reachable from a keyboard anyway. How it then DISPLAYS is still the
-        # display mode's call (strip shows '_', show shows the glyph).
+        # display mode's call (box shows a placeholder, show shows the glyph).
         if text and all(ch.isprintable() for ch in text):
             self._line_buffer += text
             self._write(text.encode('utf-8'))
@@ -2262,7 +2265,7 @@ class SecureTerminal(QPlainTextEdit):
     def _cp_at(self, pos):
         """The source code point of a neutralized/revealed character under a
         viewport point, or None. First the char format's tagged code point (every
-        marked cell carries it, in every mode -- even the strip "_"); then, for a
+        marked cell carries it, in every mode -- even the box placeholder); then, for a
         readable glyph shown as-is (show mode), the non-ASCII character itself.
 
         cursorForPosition snaps to the nearest insertion boundary; the glyph under

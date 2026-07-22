@@ -69,16 +69,17 @@ ANSI_PALETTE = [
 ]
 
 # How non-ASCII / unsafe content in program OUTPUT is shown:
-#   'strip'  -- replace with '_' (default, safe), as sanitize-string/stcat do.
+#   'box'    -- replace with a box placeholder (default, safe), as sanitize-string
+#               / stcat do; the GUI draws it as a box glyph, coloured by risk class.
 #   'show'   -- render a non-ASCII character as its glyph when it is printable
 #               (str.isprintable() excludes the invisible, bidi and format
 #               characters that make unicode deceptive), so a log with useful
-#               unicode is readable; control still becomes '_'.
+#               unicode is readable; a no-glyph character still becomes a box.
 #   'reveal' -- replace with a visible <U+XXXX> codepoint badge, to inspect.
 #   'detail' -- like reveal but verbose: <U+XXXX NAME>, the codepoint plus its
 #               official Unicode name inline (what `unicode-show` annotates), so
 #               a homoglyph reads as its identity, not just a number.
-DISPLAY_MODES = ('strip', 'show', 'reveal', 'detail')
+DISPLAY_MODES = ('box', 'show', 'reveal', 'detail')
 
 # The GUI DISPLAYS a neutralized byte as this box (U+25A1 WHITE SQUARE) instead of
 # a bare '_', so it is easy to spot and read; the widget maps it back to ASCII '_'
@@ -86,7 +87,7 @@ DISPLAY_MODES = ('strip', 'show', 'reveal', 'detail')
 # render_output() itself (used by the CLI wrapper, which writes straight to an
 # outer terminal and has no copy layer) still emits '_'. Encoded as an escape so
 # this source file stays ASCII-only.
-STRIP_BOX = '\u25a1'
+BOX = '\u25a1'
 
 
 def _detail_badge(cp):
@@ -285,7 +286,7 @@ def too_close(a, b):
     return abs(luminance(a) - luminance(b)) < 30
 
 
-def render_output(text, mode='strip'):
+def render_output(text, mode='box'):
     """Turn decoded child output into safe display text under one display mode.
     Escape sequences are always removed (there is no ANSI parser). Printable
     ASCII, tab and newline, and the two interactive cursor controls backspace
@@ -335,7 +336,7 @@ def leaves_full_screen(text):
     return any(seq in text for seq in _ALT_SCREEN_OFF)
 
 
-def sanitize_bytes(data, mode='strip'):
+def sanitize_bytes(data, mode='box'):
     """Convenience wrapper: decode raw bytes 1:1 (latin-1) and render. Used by
     tests and any all-ASCII path; the live output stream uses an incremental
     UTF-8 decoder so multi-byte characters survive read boundaries."""
@@ -598,18 +599,22 @@ def cells_to_runs(lines, current, mode, colors, markings=True, wraps=None):
 
     def emit(ch, key):
         disp = render_output(ch, mode)
-        if mode == 'strip' and disp == '_' and disp != ch:
-            # Box mode neutralizes EVERY non-ASCII byte to the placeholder, so
-            # the box is unambiguously a placeholder here (Show/Detail can hold a
-            # real box glyph, so leave those as '_'); the widget maps it back to
-            # '_' on export in strip mode only.
-            disp = STRIP_BOX
+        if mode in ('box', 'show') and disp == '_' and disp != ch:
+            # A '_' from render_output means a neutralized no-glyph character:
+            # every non-ASCII byte in Box mode, or an invisible / bidi / control
+            # character in Show mode (Show renders only a printable glyph as
+            # itself). Draw it as the box placeholder in BOTH, so Show is
+            # consistent with Box for characters that have nothing to show; the
+            # widget maps the box back to '_' on export in these two modes. A
+            # literal ASCII '_' (disp == ch) is left untouched. Reveal / Detail
+            # keep their <U+XXXX> badge instead of a box.
+            disp = BOX
         # a neutralized/revealed char (its display differs from the source) is a
         # "marking": tag it with a COLOUR SOURCE -- its risk class when colored
         # markings are on; otherwise the program's own SGR key, so allowed ANSI
         # colour is still honoured (None only when colours are off too) -- and
         # ALWAYS with its source CODEPOINT, so the widget can describe the real
-        # character on hover/click in every mode (even the strip "_", which keeps
+        # character on hover/click in every mode (even the box placeholder, which keeps
         # no other trace). Past _RUN_CAP runs (a flood) stop tagging so the runs
         # re-coalesce and the UI cannot wedge; distinct codepoints no longer merge,
         # but the cap still bounds it.
@@ -702,7 +707,7 @@ def sanitize_title(text, limit=80):
 def _cell_cp_safe(cp, mode):
     # Only 'show' renders a non-ASCII glyph in a TUI cell. 'reveal' cannot: a
     # <U+XXXX> badge is many columns wide and would break the fixed grid, so
-    # reveal falls back to the safe '_' here (same as strip). This keeps the
+    # reveal falls back to the safe '_' here (same as box). This keeps the
     # display honest -- a homoglyph never renders as its glyph under the green
     # "reveal is safe/lossless" lamp; to read the exact codepoint, use line mode.
     if 0x20 <= cp <= 0x7E:

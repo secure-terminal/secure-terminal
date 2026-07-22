@@ -37,7 +37,7 @@ argv, with no shell reparse.
     model) or in the safe CLI mode. Overrides the configured default for this
     tab only. TUI mode needs `python3-pyte`.
 
-  * `--mode` `strip`|`show`|`reveal`|`detail`:
+  * `--mode` `box`|`show`|`reveal`|`detail`:
     Initial unicode display mode (see DISPLAY MODES).
 
   * `-e`, `--command` <STRING>:
@@ -83,9 +83,9 @@ secure-terminal has two rendering modes, chosen per tab:
     for the shell's completion menus and progress displays.
 
 The unicode `--mode` controls how a non-ASCII byte in output is shown (the top-bar
-label for `strip` is "Box"):
+label for `box` is "Box"):
 
-  * `strip`:
+  * `box`:
     Replace it with a coloured box, one per character, tinted by risk class (the
     safe default). A saved transcript maps the box back to a plain ASCII "_".
 
@@ -93,7 +93,7 @@ label for `strip` is "Box"):
     Render the glyph when printable, tinted by risk class so a look-alike stands
     out (a homoglyph confusable with ASCII wears a louder colour than honest
     foreign text). Non-printable classes (invisible, bidi, control) have no glyph,
-    so they still show as a coloured placeholder.
+    so they still show as the same coloured box.
 
   * `reveal`:
     Show a `<U+XXXX>` codepoint badge (hover for its name).
