@@ -36,7 +36,7 @@ from secure_terminal.terminal import (
     SecureTerminal, THEMES, DISPLAY_MODES, tui_available,
     sound_file_allowed, BELL_SOUND_DIRS, DEFAULT_FONT_FAMILY,
 )
-from secure_terminal.review import PasteReviewBar
+from secure_terminal.review import ReviewBar
 
 TUI_TOOLTIP = (
     'TUI mode runs full-screen programs (ssh, vim, htop, tmux) by '
@@ -407,6 +407,8 @@ class MainWindow(QMainWindow):
             self._paste_delay = 3
         self._paste_warn = cfg.get('paste_warn') \
             if cfg.get('paste_warn') in ('always', 'unicode', 'never') else 'unicode'
+        self._copy_warn = cfg.get('copy_warn') \
+            if cfg.get('copy_warn') in ('always', 'unicode', 'never') else 'unicode'
         self._default_tui = cfg.get('tui') == 'true'
         # opt-in: advertise the restricted `secure-terminal` terminfo (CLI-mode)
         # instead of xterm-256color for new tabs. Off by default (xterm-256color
@@ -508,7 +510,7 @@ class MainWindow(QMainWindow):
         col.setSpacing(0)
         self._banner = self._make_banner()
         self._find_bar = FindBar(self)
-        self._review_bar = PasteReviewBar(self)
+        self._review_bar = ReviewBar(self)
         col.addWidget(self.tabs)
         col.addWidget(self._review_bar)
         col.addWidget(self._find_bar)
@@ -580,7 +582,9 @@ class MainWindow(QMainWindow):
         term.advise_signal.connect(lambda msg, t=term: self._on_advise(t, msg))
         term.osc_used.connect(lambda key, t=term: self._on_osc_used(t, key))
         term.paste_review_requested.connect(
-            lambda raw, delay, t=term: self._show_paste_review(t, raw, delay))
+            lambda raw, delay, t=term: self._show_review(t, raw, delay, 'paste'))
+        term.copy_review_requested.connect(
+            lambda raw, delay, t=term: self._show_review(t, raw, delay, 'copy'))
         term.paste_review_resolved.connect(
             lambda t=term: self._hide_paste_review(t))
         index = self.tabs.addTab(term, term.cwd_basename() or 'shell')
@@ -717,6 +721,7 @@ class MainWindow(QMainWindow):
         term.apply_scrollback(self._scrollback)
         term.apply_paste_delay(self._paste_delay)
         term.apply_paste_warn(self._paste_warn)
+        term.apply_copy_warn(self._copy_warn)
         term.apply_bell(self._default_bell)
         term.apply_bell_sound(self._default_bell_sound)
         self._connect_bell_tray(term)
@@ -755,6 +760,7 @@ class MainWindow(QMainWindow):
         term.apply_scrollback(self._scrollback)
         term.apply_paste_delay(self._paste_delay)
         term.apply_paste_warn(self._paste_warn)
+        term.apply_copy_warn(self._copy_warn)
         bell = self._default_bell
         if spec.get('bell') is not None and 'bell' not in self._locked:
             bell = SecureTerminal._parse_bell(spec['bell'])
@@ -935,6 +941,7 @@ class MainWindow(QMainWindow):
             term.apply_scrollback(self._scrollback)
         term.apply_paste_delay(self._paste_delay)
         term.apply_paste_warn(self._paste_warn)
+        term.apply_copy_warn(self._copy_warn)
         # restore the full per-feature OSC map when present; fall back to the legacy
         # allow_title boolean for sessions saved before the granular controls (which
         # collapsed hyperlink/clipboard/colour/cwd/iTerm2 into title+notify).
@@ -1072,18 +1079,19 @@ class MainWindow(QMainWindow):
             term.reset_caret()
             term.setFocus()
 
-    # -- paste review (the in-window bar) -------------------------------------
-    def _show_paste_review(self, term, raw, delay):
-        """A tab is holding a risky paste: show the review bar for it. Only the
-        active tab can be pasting into, so a background tab's request is ignored
-        (its paste stays held until it is focused and resolved)."""
+    # -- paste / copy review (the in-window bar) ------------------------------
+    def _show_review(self, term, raw, delay, kind):
+        """A tab is holding risky text crossing the boundary (a paste coming in or
+        a copy going out): show the review bar for it. Only the active tab can be
+        the target, so a background tab's request is ignored (its text stays held
+        until the tab is focused and resolved)."""
         if term is not self.current():
             return
-        self._review_bar.show_review(term, raw, delay)
+        self._review_bar.show_review(term, raw, delay, kind)
 
     def _hide_paste_review(self, term):
-        """The paste was resolved (sent or rejected): hide the bar and return focus
-        to the terminal so typing resumes."""
+        """The text was resolved (crossed or rejected): hide the bar and return
+        focus to the terminal so typing resumes."""
         self._review_bar.hide_review()
         if term is self.current():
             term.setFocus()
@@ -2014,8 +2022,8 @@ class MainWindow(QMainWindow):
         self._persist()
 
     def set_paste_warn(self, mode):
-        """When to show the paste-warning dialog: always / unicode (default) /
-        never. Applies to every tab and becomes the default for new ones."""
+        """When to review a paste: always / unicode (default) / never. Applies to
+        every tab and becomes the default for new ones."""
         if mode not in ('always', 'unicode', 'never') or 'paste_warn' in self._locked:
             return
         self._paste_warn = mode
@@ -2023,6 +2031,21 @@ class MainWindow(QMainWindow):
             self.tabs.widget(i).apply_paste_warn(mode)
         if hasattr(self, '_paste_warn_actions'):
             act = self._paste_warn_actions.get(mode)
+            if act is not None and not act.isChecked():
+                act.setChecked(True)
+        self._persist()
+
+    def set_copy_warn(self, mode):
+        """When to review a copy leaving for the clipboard: always / unicode
+        (default) / never. Separate from the paste warning (copy and paste are
+        opposite trust directions). Applies to every tab and new ones."""
+        if mode not in ('always', 'unicode', 'never') or 'copy_warn' in self._locked:
+            return
+        self._copy_warn = mode
+        for i in range(self.tabs.count()):
+            self.tabs.widget(i).apply_copy_warn(mode)
+        if hasattr(self, '_copy_warn_actions'):
+            act = self._copy_warn_actions.get(mode)
             if act is not None and not act.isChecked():
                 act.setChecked(True)
         self._persist()
@@ -2104,6 +2127,7 @@ class MainWindow(QMainWindow):
             'scrollback': str(self._scrollback),
             'paste_delay': str(self._paste_delay),
             'paste_warn': self._paste_warn,
+            'copy_warn': self._copy_warn,
             'tui': 'true' if self._default_tui else 'false',
             'cli_terminfo': 'true' if self._default_cli_terminfo else 'false',
             'allow_title': 'true' if self._default_allow_title else 'false',
@@ -2527,6 +2551,28 @@ class MainWindow(QMainWindow):
             pw_group.addAction(act)
             pw_menu.addAction(act)
             self._paste_warn_actions[key] = act
+
+        cw_menu = view_menu.addMenu('&Copy warning')
+        cw_group = QActionGroup(self)
+        cw_group.setExclusive(True)
+        self._copy_warn_actions = {}
+        for label, key, tip in (
+            ('&Always', 'always', 'Review every copy before it reaches the clipboard.'),
+            ('If &unicode', 'unicode',
+             'Review a copy only when the selection carries unicode or control '
+             'characters (the default) -- e.g. a homoglyph shown in Show mode. A '
+             'plain-ASCII copy goes straight through.'),
+            ('&Never', 'never',
+             'Never prompt on copy. The displayed text is copied as-is (already '
+             'sanitized: hidden characters are shown as boxes).'),
+        ):
+            act = QAction(label, self, checkable=True)
+            act.setToolTip(tip)
+            act.setChecked(key == self._copy_warn)
+            act.triggered.connect(lambda _checked, k=key: self.set_copy_warn(k))
+            cw_group.addAction(act)
+            cw_menu.addAction(act)
+            self._copy_warn_actions[key] = act
 
         tabs_menu = bar.addMenu('Ta&bs')
         act_next_tab = QAction('&Next Tab', self)

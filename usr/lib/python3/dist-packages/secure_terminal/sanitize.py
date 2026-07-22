@@ -729,6 +729,24 @@ def sanitize_paste_unicode(text):
     return ''.join(out)
 
 
+def sanitize_clipboard_unicode(text):
+    """Text safe to place on the SYSTEM clipboard: printable characters plus tab
+    and newline. Control, bidi, zero-width and other invisibles (the "output lies"
+    hazard) are all non-printable, so str.isprintable() drops them and none can
+    ride the clipboard into another application. Unlike sanitize_paste_unicode,
+    printable non-ASCII (accents, CJK) is KEPT and newlines are PRESERVED as
+    newlines -- clipboard text is multi-line content, not a shell submission."""
+    return ''.join(ch for ch in text if ch.isprintable() or ch in '\n\t')
+
+
+def sanitize_clipboard(text):
+    """Like sanitize_clipboard_unicode but ASCII-only: drop every non-ASCII
+    character (so a homoglyph cannot ride out either), keeping printable ASCII
+    plus tab and newline."""
+    return ''.join(ch for ch in text
+                   if ch in '\n\t' or 0x20 <= ord(ch) <= 0x7E)
+
+
 def sanitize_title(text, limit=80):
     """Reduce a program-supplied window title or notification to safe plain
     ASCII: keep only printable ASCII (so no control, escape, bidi or homoglyph

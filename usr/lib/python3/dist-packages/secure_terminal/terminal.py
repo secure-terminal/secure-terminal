@@ -115,7 +115,7 @@ from PyQt6.QtWidgets import (QPlainTextEdit, QToolTip, QDialog, QVBoxLayout,
 from secure_terminal.sanitize import (
     THEMES, BASE_POINT_SIZE, ANSI_PALETTE, DISPLAY_MODES,
     colors_allowed, too_close, luminance, sanitize_paste,
-    sanitize_paste_unicode,
+    sanitize_paste_unicode, sanitize_clipboard, sanitize_clipboard_unicode,
     paste_findings, tui_cell, sanitize_title,
     feed_line_edits, cells_to_runs, cells_display_col, MARK_KEY, WRAP_NL, BOX,
     wants_full_screen, leaves_full_screen, wants_screen_repaint, wants_clear,
@@ -322,6 +322,9 @@ class SecureTerminal(QPlainTextEdit):
     # the choice is made (send or reject), so the window can hide the bar.
     paste_review_requested = pyqtSignal(str, int)
     paste_review_resolved = pyqtSignal()
+    # As paste_review_requested, but for text leaving via COPY (the same review bar
+    # and preview, configured separately). (raw text, countdown seconds).
+    copy_review_requested = pyqtSignal(str, int)
     # a program emitted an OSC escape (window title, clipboard, hyperlink, ...)
     # while in line mode, where it is stripped for safety. Carries the FEATURE KEY
     # (see OSC_FEATURES; 'osc_other' for an unrecognized code) so the window can
@@ -347,9 +350,11 @@ class SecureTerminal(QPlainTextEdit):
         # NO child: it spawns no pty and accepts no keyboard input, so the paste
         # review can show the terminal's real rendering without a shell behind it.
         self._preview = bool(preview)
-        # A pasted text held awaiting the user's review choice (see
-        # insertFromMimeData); while active, terminal input is suspended.
+        # A pasted text, or a selection being copied out, held awaiting the user's
+        # review choice (see insertFromMimeData / copy). Only one review is active
+        # at a time; while active, terminal input is suspended.
         self._pending_paste = None
+        self._pending_copy = None
         self._review_active = False
         self.setUndoRedoEnabled(False)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
@@ -412,6 +417,7 @@ class SecureTerminal(QPlainTextEdit):
         # seconds the paste-warning "Allow" button stays disabled.
         self._paste_delay = 3
         self._paste_warn = 'unicode'   # always | unicode (default) | never
+        self._copy_warn = 'unicode'    # always | unicode (default) | never
 
         # TUI mode: interpret escapes through a pyte screen so full-screen
         # programs (ssh, vim, htop, tmux) work. Off by default; the strict, no-parser
@@ -684,6 +690,12 @@ class SecureTerminal(QPlainTextEdit):
 
     def current_paste_warn(self):
         return self._paste_warn
+
+    def apply_copy_warn(self, mode):
+        self._copy_warn = mode if mode in ('always', 'unicode', 'never') else 'unicode'
+
+    def current_copy_warn(self):
+        return self._copy_warn
 
     # -- TUI mode -------------------------------------------------------------
     def apply_tui(self, enabled):
@@ -1751,8 +1763,7 @@ class SecureTerminal(QPlainTextEdit):
             text = base64.b64decode(payload, validate=True).decode('utf-8', 'replace')
         except (ValueError, base64.binascii.Error):
             return
-        text = ''.join(ch for ch in text if ch.isprintable() or ch in '\n\t')
-        QGuiApplication.clipboard().setText(text)
+        QGuiApplication.clipboard().setText(sanitize_clipboard_unicode(text))
 
     def _osc_cwd(self, params):
         """OSC 7: file://HOST/PATH working-directory report. Used for the tab; the
@@ -1906,13 +1917,15 @@ class SecureTerminal(QPlainTextEdit):
         # display box. Qt's own rendering does not go through this method.
         return self._export_ascii(super().toPlainText())
 
-    def createMimeDataFromSelection(self):
-        """On copy, join soft-autowrapped rows (blocks _paint_line marked with
-        userState 1) so a line that wrapped at the terminal width copies as one
-        line, like a real terminal -- not with a spurious newline at each wrap."""
+    def _selection_text(self):
+        """The current selection as it would leave the widget: soft-autowrapped
+        rows (blocks _paint_line marked with userState 1) are joined so a line that
+        wrapped at the terminal width copies as one line, like a real terminal --
+        not with a spurious newline at each wrap -- and the box placeholder is
+        mapped back to ASCII in Box mode (_export_ascii). '' if nothing selected."""
         cursor = self.textCursor()
         if not cursor.hasSelection():
-            return super().createMimeDataFromSelection()
+            return ''
         doc = self.document()
         start, end = cursor.selectionStart(), cursor.selectionEnd()
         parts = []
@@ -1931,9 +1944,59 @@ class SecureTerminal(QPlainTextEdit):
                 parts.append('\n')
             parts.append(seg.selectedText())
             block = block.next()
+        return self._export_ascii(''.join(parts))
+
+    def createMimeDataFromSelection(self):
+        cursor = self.textCursor()
+        if not cursor.hasSelection():
+            return super().createMimeDataFromSelection()
         data = QMimeData()
-        data.setText(self._export_ascii(''.join(parts)))
+        data.setText(self._selection_text())
         return data
+
+    def copy(self):
+        """Copy the selection, reviewing it first when it would carry unicode /
+        control characters out to the system clipboard (per the copy_warn setting).
+        The display is already sanitized -- Box/Reveal/Detail export pure ASCII --
+        so a review only arises in Show mode, where real glyphs (a homoglyph, CJK)
+        are kept: e.g. after `cat evil-log`, selecting and copying would otherwise
+        put the look-alike straight on the clipboard. Reuses the SAME review bar
+        and preview as paste; configured SEPARATELY (copy and paste are opposite
+        trust directions)."""
+        text = self._selection_text()
+        if not text or self._review_active:
+            return
+        has_unicode, has_control = paste_findings(text)
+        warn = self._copy_warn
+        if warn == 'always' or (warn == 'unicode' and (has_unicode or has_control)):
+            self._pending_copy = text
+            self._review_active = True
+            # no countdown for copy: it is not executed, so the anti-fat-finger
+            # gate the paste review needs does not apply (delay 0).
+            self.copy_review_requested.emit(text, 0)
+            return
+        self._set_clipboard(sanitize_clipboard_unicode(text))
+
+    def dispatch_pending_copy(self, action):
+        """Resolve a held copy review: 'stripped' copies ASCII only, 'unicode'
+        keeps printable non-ASCII, 'reject' copies nothing. Re-enables input and
+        tells the window to hide the review bar. A no-op if none pending."""
+        if not self._review_active:
+            return
+        text = self._pending_copy
+        self._pending_copy = None
+        self._review_active = False
+        self.paste_review_resolved.emit()
+        if text is None or action == 'reject':
+            return
+        safe = (sanitize_clipboard_unicode(text) if action == 'unicode'
+                else sanitize_clipboard(text))
+        self._set_clipboard(safe)
+
+    def _set_clipboard(self, text):
+        board = QGuiApplication.clipboard()
+        if board is not None:
+            board.setText(text)
 
     def _write(self, data):
         """Write ALL of `data` to the pty. The single point where anything reaches

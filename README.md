@@ -54,6 +54,13 @@ It does nothing about the programs you deliberately run.
   wave a hostile paste through. In the default mode a plain-ASCII paste is not
   interrupted; the warning is configurable to always, only-on-unicode (the
   default), or never.
+- **The same review for copy, going the other way.** Text leaving via copy is
+  reviewed too, with the same bar: after `cat evil-log`, selecting and copying in
+  Show mode (where real glyphs are kept) would otherwise put a look-alike straight
+  on the system clipboard, so you choose to copy it stripped to ASCII, with
+  printable unicode kept, or not at all. Configured separately from the paste
+  warning (copy and paste are opposite trust directions): always, only-on-unicode
+  (the default), or never.
 - **Tiny input allowlist.** You type printable ASCII plus a small set of control
   keys that the pseudo-terminal turns into signals:
 
