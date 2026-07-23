@@ -78,11 +78,11 @@ def _write_atomic(path, text):
     os.replace(tmp, path)
 
 
-def save(tabs, window=None):
+def save(tabs, window=None, active=None):
     """Write the list of tab dicts: each tab's 'text' scrollback to its own
     tab-<n>.log, the rest as the index in session.json. `window` is an opaque
-    base64 window-geometry blob (Qt saveGeometry, size + maximized state), kept
-    so the next start reopens at the same size. Never raises."""
+    base64 window-geometry blob (Qt saveGeometry, size + maximized state); `active`
+    is the index of the focused tab, so the next start reopens it. Never raises."""
     path = session_path()
     try:
         os.makedirs(_state_dir(), exist_ok=True)
@@ -98,9 +98,24 @@ def save(tabs, window=None):
         payload = {'tabs': index}
         if isinstance(window, str) and window:
             payload['window'] = window
+        if isinstance(active, int) and 0 <= active < len(index):
+            payload['active'] = active
         _write_atomic(path, json.dumps(payload))
     except OSError:
         pass                    # a failed session save is never fatal
+
+
+def load_active():
+    """Return the saved focused-tab index, or None. Never raises."""
+    try:
+        with open(session_path(), encoding='utf-8') as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    active = data.get('active')
+    return active if isinstance(active, int) and active >= 0 else None
 
 
 def load_window():

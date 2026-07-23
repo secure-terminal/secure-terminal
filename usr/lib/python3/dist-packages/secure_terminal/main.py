@@ -564,11 +564,17 @@ class MainWindow(QMainWindow):
             # blocks the first paint for seconds.
             restored = [i for i in (session.load() if self._persist_session else [])
                         if isinstance(i, dict)]
+            # The tab that was focused last time, brought into focus ONCE after the
+            # whole restore settles -- never by flashing the view through each tab
+            # as it loads (every tab is restored in the background, activate=False).
+            self._restore_active = session.load_active() if self._persist_session else None
             if restored:
-                self._restore_tab(restored[0])
+                self._restore_tab(restored[0], activate=False)
             self._deferred_restore = restored[1:]
             if self._deferred_restore:
                 QTimer.singleShot(0, self._restore_next_deferred)
+            else:
+                self._focus_restored_active()
         if self.tabs.count() == 0:
             self.new_tab()
 
@@ -959,6 +965,17 @@ class MainWindow(QMainWindow):
         self._restore_tab(self._deferred_restore.pop(0), activate=False)
         if self._deferred_restore:
             QTimer.singleShot(0, self._restore_next_deferred)
+        else:
+            self._focus_restored_active()      # queue drained: focus the last tab
+
+    def _focus_restored_active(self):
+        """Bring the previously-focused tab into view, ONCE, after the background
+        restore has settled. A no-op when nothing was saved or the index no longer
+        fits (the default first tab stays current)."""
+        idx = getattr(self, '_restore_active', None)
+        self._restore_active = None
+        if idx is not None and 0 <= idx < self.tabs.count():
+            self.tabs.setCurrentIndex(idx)
 
     def _restore_tab(self, info, activate=True):
         """Recreate a tab from saved session state: its settings, name, colour
@@ -3426,7 +3443,8 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         if self._persist_session:
-            session.save(self._session_tabs(), self._window_state())
+            session.save(self._session_tabs(), self._window_state(),
+                         self.tabs.currentIndex())
         else:
             session.clear()
         for i in range(self.tabs.count()):
