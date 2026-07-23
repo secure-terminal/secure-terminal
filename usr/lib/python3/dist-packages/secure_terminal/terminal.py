@@ -1344,8 +1344,10 @@ class SecureTerminal(QPlainTextEdit):
 
         The terminfo DIR is returned in BOTH modes (so TERMINFO_DIRS always resolves
         both entries), which lets a mode switch re-export TERM into the running shell
-        without a restart (see apply_tui). Safety never rests on TERM -- line mode
-        strips every escape regardless."""
+        without a restart (see apply_tui). An installed system also ships the entry
+        in the system terminfo db (/usr/share/terminfo), so it resolves without
+        TERMINFO_DIRS; this dir covers a source checkout. Safety never rests on TERM
+        -- line mode strips every escape regardless."""
         tdir = cli_terminfo_dir()
         if not self._tui and tdir:
             return 'secure-terminal', tdir

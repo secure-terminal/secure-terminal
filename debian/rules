@@ -17,10 +17,16 @@ execute_after_dh_install:
 	install -d debian/secure-terminal/usr/share/secure-terminal
 	dpkg-parsechangelog -S Version \
 		> debian/secure-terminal/usr/share/secure-terminal/version
-	## Compile the opt-in restricted CLI terminfo entry at build time, next to its
-	## source, so an installed system need not run tic at runtime (the app falls
-	## back to compiling into the user cache only for a source checkout).
+	## Compile the restricted CLI terminfo entry at build time. Install it into the
+	## SYSTEM terminfo db (/usr/share/terminfo) so `TERM=secure-terminal` resolves in
+	## EVERY shell without TERMINFO_DIRS -- a nested shell, ssh, tmux, or the
+	## mode-switch re-export -- the way alacritty and kitty ship their entries (a
+	## unique s/secure-terminal file, no dpkg conflict). The copy next to the source
+	## stays for a not-installed source checkout (the app points TERMINFO_DIRS there).
 	tic -x -o debian/secure-terminal/usr/share/secure-terminal/terminfo \
+		debian/secure-terminal/usr/share/secure-terminal/terminfo/secure-terminal.ti
+	install -d debian/secure-terminal/usr/share/terminfo
+	tic -x -o debian/secure-terminal/usr/share/terminfo \
 		debian/secure-terminal/usr/share/secure-terminal/terminfo/secure-terminal.ti
 
 ## Generate the man page from its ronn source at build time (reproducible date),
