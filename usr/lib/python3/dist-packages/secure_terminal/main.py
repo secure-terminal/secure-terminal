@@ -564,17 +564,21 @@ class MainWindow(QMainWindow):
             # blocks the first paint for seconds.
             restored = [i for i in (session.load() if self._persist_session else [])
                         if isinstance(i, dict)]
-            # The tab that was focused last time, brought into focus ONCE after the
-            # whole restore settles -- never by flashing the view through each tab
-            # as it loads (every tab is restored in the background, activate=False).
-            self._restore_active = session.load_active() if self._persist_session else None
+            # Restore the tab that was focused last time FIRST, so it -- not tab 0 --
+            # is the one shown the instant the window opens (no first-tab flash). The
+            # rest are inserted at their saved positions AROUND it in the background,
+            # one per event-loop turn, so a big multi-tab session does not block the
+            # first paint and the active tab stays current throughout.
+            active = session.load_active() if self._persist_session else None
+            if not (isinstance(active, int) and 0 <= active < len(restored)):
+                active = 0
+            self._deferred_restore = []
             if restored:
-                self._restore_tab(restored[0], activate=False)
-            self._deferred_restore = restored[1:]
+                self._restore_tab(restored[active], activate=True)
+                self._deferred_restore = [(i, restored[i]) for i in range(len(restored))
+                                          if i != active]
             if self._deferred_restore:
                 QTimer.singleShot(0, self._restore_next_deferred)
-            else:
-                self._focus_restored_active()
         if self.tabs.count() == 0:
             self.new_tab()
 
@@ -590,7 +594,7 @@ class MainWindow(QMainWindow):
         self._update_terminate_enabled()
 
     # -- tabs, each its own shell over its own pseudo-terminal -----------------
-    def _add_tab(self, term, activate=True):
+    def _add_tab(self, term, activate=True, at=None):
         self._tab_ids[term] = self._next_tab_id       # stable id for ctl matching
         self._next_tab_id += 1
         term.zoom_step.connect(self._on_zoom_step)
@@ -613,11 +617,19 @@ class MainWindow(QMainWindow):
             lambda raw, delay, t=term: self._show_review(t, raw, delay, 'copy'))
         term.paste_review_resolved.connect(
             lambda t=term: self._hide_paste_review(t))
-        index = self.tabs.addTab(term, term.cwd_basename() or 'shell')
+        label = term.cwd_basename() or 'shell'
+        # `at` places a background-restored tab at its saved position around the
+        # already-shown active tab, which stays current across the insert (Qt keeps
+        # the current WIDGET), so nothing flashes.
+        if at is None:
+            index = self.tabs.addTab(term, label)
+        else:
+            index = self.tabs.insertTab(min(at, self.tabs.count()), term, label)
         # Background-restored session tabs are added WITHOUT switching to them: each
         # setCurrentIndex would show that tab for an instant, so a multi-tab restore
-        # flashed the view through every tab (and left the LAST one focused). Only
-        # the foreground tab activates; the rest load quietly behind it.
+        # flashed the view through every tab. Only the foreground tab activates; the
+        # rest load quietly behind it (the saved active tab is restored FIRST, so it
+        # is what shows immediately -- never tab 0 first).
         if activate:
             self.tabs.setCurrentIndex(index)
         # auto-colour the new tab so it differs from its neighbour, unless one is
@@ -962,22 +974,13 @@ class MainWindow(QMainWindow):
         Any remainder is finished in closeEvent so no tab is dropped from the save."""
         if not self._deferred_restore:
             return
-        self._restore_tab(self._deferred_restore.pop(0), activate=False)
+        idx, info = self._deferred_restore.pop(0)
+        # insert at the saved position (clamped); the active tab stays current.
+        self._restore_tab(info, activate=False, at=idx)
         if self._deferred_restore:
             QTimer.singleShot(0, self._restore_next_deferred)
-        else:
-            self._focus_restored_active()      # queue drained: focus the last tab
 
-    def _focus_restored_active(self):
-        """Bring the previously-focused tab into view, ONCE, after the background
-        restore has settled. A no-op when nothing was saved or the index no longer
-        fits (the default first tab stays current)."""
-        idx = getattr(self, '_restore_active', None)
-        self._restore_active = None
-        if idx is not None and 0 <= idx < self.tabs.count():
-            self.tabs.setCurrentIndex(idx)
-
-    def _restore_tab(self, info, activate=True):
+    def _restore_tab(self, info, activate=True, at=None):
         """Recreate a tab from saved session state: its settings, name, colour
         and scrollback history, under a fresh shell. `activate` False adds it as a
         background tab (a deferred multi-tab restore, so the view does not flash)."""
@@ -1024,7 +1027,7 @@ class MainWindow(QMainWindow):
                         else info.get('bell', self._default_bell))
         term.apply_bell_sound(self._default_bell_sound)
         self._connect_bell_tray(term)
-        index = self._add_tab(term, activate=activate)
+        index = self._add_tab(term, activate=activate, at=at)
         name = info.get('name')
         if isinstance(name, str) and name:
             self._user_titles[term] = name
@@ -3432,7 +3435,8 @@ class MainWindow(QMainWindow):
         # re-created is not dropped from the saved session (its log would otherwise
         # be pruned by session.save).
         while self._deferred_restore:
-            self._restore_tab(self._deferred_restore.pop(0), activate=False)
+            _idx, _info = self._deferred_restore.pop(0)
+            self._restore_tab(_info, activate=False, at=_idx)
         running = sum(1 for i in range(self.tabs.count())
                       if self.tabs.widget(i).has_foreground_program())
         if running and not self._confirm_running_close(
