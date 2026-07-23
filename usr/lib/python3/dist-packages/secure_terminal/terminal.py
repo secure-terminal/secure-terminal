@@ -2100,7 +2100,13 @@ class SecureTerminal(QPlainTextEdit):
         if not cursor.hasSelection():
             return super().createMimeDataFromSelection()
         data = QMimeData()
-        data.setText(self._selection_text())
+        # The X11 PRIMARY selection (mouse-select) and drag-and-drop go through here
+        # AUTOMATICALLY, with no review UI possible -- so strip to safe ASCII (as the
+        # copy review's 'stripped' action does). Otherwise a Show-mode homoglyph would
+        # reach a middle-click-paste / drop target unreviewed, exactly the leak the
+        # copy review exists to stop. Ctrl+C still routes through copy()'s review, so
+        # keeping a real glyph stays an explicit, reviewed choice.
+        data.setText(sanitize_clipboard(self._selection_text()))
         return data
 
     def copy(self):

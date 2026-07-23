@@ -2757,8 +2757,10 @@ class MainWindow(QMainWindow):
         for label, key, tip in (
             ('&Always', 'always', 'Show the paste-warning dialog on every paste.'),
             ('If &unicode', 'unicode',
-             'Show it only when the paste carries unicode or control characters '
-             '(the default). Plain-ASCII pastes go straight through.'),
+             'Show it when the paste carries unicode or control characters, OR spans '
+             'multiple lines (the default) -- a multi-line paste is held so a hidden '
+             'second command cannot run the instant you paste. A single plain-ASCII '
+             'line goes straight through.'),
             ('&Never', 'never',
              'Never prompt. The paste is still sanitized (escapes and hidden '
              'bytes removed) before it reaches the shell.'),
