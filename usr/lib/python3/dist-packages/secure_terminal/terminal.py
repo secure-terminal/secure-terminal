@@ -78,6 +78,7 @@ import codecs
 import struct
 import termios
 import shlex
+import unicodedata
 
 try:
     import pyte
@@ -85,6 +86,10 @@ except ImportError:  # pragma: no cover - pyte is a hard runtime dependency
     pyte = None                          # (TUI mode is unavailable without it)
 
 if pyte is not None:
+    # Per base cell; Unicode UAX #15 stream-safe format allows at most 30
+    # combining marks, so any conformant text stays untouched.
+    _TUI_COMBINE_CAP = 32
+
     class _SafeHistoryScreen(pyte.HistoryScreen):
         """pyte 0.8.0's HistoryScreen.select_graphic_rendition() takes only
         *attrs, but pyte's stream dispatches a private ("?"-prefixed) CSI with
@@ -100,6 +105,33 @@ if pyte is not None:
             if private:
                 return
             super().select_graphic_rendition(*attrs)
+
+        def draw(self, data):
+            # Bound a Zalgo flood. pyte merges each zero-width combining mark into
+            # the cell before the cursor via unicodedata.normalize("NFC",
+            # cell.data + mark) -- O(len) per mark -- so a base plus thousands of
+            # marks, OR a cursor that steers many chunks back onto ONE cell, reshapes
+            # in O(n^2) and freezes the render for seconds. Drop a mark once its
+            # TARGET cell already holds the Unicode stream-safe maximum: cell-accurate,
+            # so neither read boundaries nor cursor moves can bypass it. Lossless for
+            # real decomposed text (never nears the cap). Fast path: an all-ASCII
+            # chunk (the common case) batches through at C speed, since ASCII can
+            # never be a combining mark.
+            if data.isascii():
+                super().draw(data)
+                return
+            for ch in data:
+                if ord(ch) >= 0x0300 and unicodedata.combining(ch):
+                    x = self.cursor.x
+                    if x:
+                        target = self.buffer[self.cursor.y].get(x - 1)
+                    elif self.cursor.y:
+                        target = self.buffer[self.cursor.y - 1].get(self.columns - 1)
+                    else:
+                        target = None
+                    if target is not None and len(target.data) > _TUI_COMBINE_CAP:
+                        continue                  # target cell already at the cap
+                super().draw(ch)
 else:  # pragma: no cover - pyte is a hard runtime dependency (always present)
     _SafeHistoryScreen = None
 

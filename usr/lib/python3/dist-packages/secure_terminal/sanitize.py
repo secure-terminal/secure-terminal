@@ -477,6 +477,21 @@ def _printable_follows(raw, i):
     return False
 
 
+# Unicode UAX #15 stream-safe format guarantees at most 30 combining marks per
+# base character; keep a hair above so any conformant text is untouched. Bounds a
+# Zalgo flood in the CLI cell model (feed_line_edits) and the TUI grid.
+_COMBINING_RUN_MAX = 32
+
+
+def _is_mark(ch):
+    # A Unicode Mark (Mn/Mc/Me): a grapheme-extending character that stacks onto the
+    # preceding base into one cluster, WHATEVER its canonical combining class. Many
+    # spacing marks (Mc) and some nonspacing marks (Mn) have class 0, so
+    # unicodedata.combining() alone would miss them and let a flood past the cap.
+    # (The lowest Mark is U+0300, so callers fast-reject on ord(ch) < 0x0300 first.)
+    return unicodedata.category(ch)[0] == 'M'
+
+
 def feed_line_edits(cells, col, sgr, raw, max_line=0):
     """Advance the current line's LOGICAL cell buffer by one raw output chunk.
 
@@ -596,6 +611,34 @@ def feed_line_edits(cells, col, sgr, raw, max_line=0):
                 completed.append(cells)
                 wraps.append(True)                  # a soft autowrap continuation
                 cells, col = [], 0
+            # Bound a Zalgo flood at the CELL level (after escape stripping): a base
+            # plus thousands of combining marks is one grapheme cluster the text
+            # engine reshapes in O(n^2), freezing the GUI. Capping here (not on the
+            # raw stream) is escape-proof -- a stripped SGR between mark-blocks
+            # leaves them adjacent to the same base, so only the rendered run counts.
+            # The persisted `cells` also make it read-boundary-proof. Count marks on
+            # BOTH sides of `col`: overwriting a separator (via a cursor move) with a
+            # mark would otherwise fuse the left and right runs, each just under the
+            # cap, into one over-cap cluster. Lossless for real decomposed text,
+            # which never nears the Unicode stream-safe cap.
+            if ord(ch) >= 0x0300 and _is_mark(ch):
+                left = 0
+                j = col - 1
+                while 0 <= j < len(cells) and _is_mark(cells[j][0]):
+                    left += 1
+                    if left >= _COMBINING_RUN_MAX:
+                        break
+                    j -= 1
+                right = 0
+                j = col + 1
+                while j < len(cells) and _is_mark(cells[j][0]):
+                    right += 1
+                    if right >= _COMBINING_RUN_MAX:
+                        break
+                    j += 1
+                if left + 1 + right > _COMBINING_RUN_MAX:
+                    i += 1
+                    continue                        # would fuse an over-cap run: drop
             state = tuple(sorted(sgr.items()))
             if col < len(cells):
                 cells[col] = (ch, state)
