@@ -1010,7 +1010,12 @@ class MainWindow(QMainWindow):
                 else (os.path.basename(cwd.rstrip('/')) or '/')
         else:
             label = 'shell'
-        self.tabs.insertTab(min(at, self.tabs.count()), ph, label)
+        index = self.tabs.insertTab(min(at, self.tabs.count()), ph, label)
+        # Not selectable until its shell swaps in: a user click must never make a
+        # placeholder the current tab, or the many current()-based actions (copy,
+        # paste, zoom, per-tab settings) would call a SecureTerminal method on a bare
+        # QWidget and crash. The real tab inserted by _swap_placeholder is enabled.
+        self.tabs.setTabEnabled(index, False)
         self._renumber_tabs()
         return ph
 
@@ -1116,13 +1121,18 @@ class MainWindow(QMainWindow):
             return
         if not isinstance(term, SecureTerminal):
             # a restore placeholder: no shell to confirm or shut down -- drop it from
-            # both pending collections and remove the bar entry.
+            # both pending collections and any name/colour keyed to it, remove the bar
+            # entry, and close the window if it was the last tab (as the real path does).
             self._pending_restore.pop(term, None)
             if term in self._deferred_restore:
                 self._deferred_restore.remove(term)
+            self._user_titles.pop(term, None)
+            self._tab_colors.pop(term, None)
             self.tabs.removeTab(index)
             term.deleteLater()
             self._renumber_tabs()
+            if self.tabs.count() == 0:
+                self.close()
             return
         if not self._confirm_running_close(
                 'Close tab?',
@@ -1341,6 +1351,8 @@ class MainWindow(QMainWindow):
         for off in order:
             idx = (start + (-off if backward else off)) % count
             other = self.tabs.widget(idx)
+            if not isinstance(other, SecureTerminal):
+                continue                  # skip a not-yet-restored placeholder tab
             cursor = other.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End if backward
                                 else QTextCursor.MoveOperation.Start)
@@ -3243,8 +3255,7 @@ class MainWindow(QMainWindow):
                                      or self._osc_defaults.get('osc_notify'))
         self._scrollback = opts['scrollback']
         self._paste_delay = opts['paste_delay']
-        for index in range(self.tabs.count()):
-            term = self.tabs.widget(index)
+        for term in self._real_terms():
             term.apply_theme(opts['theme'])
             term.apply_zoom(opts['zoom'])
             term.apply_mode(opts['mode'])

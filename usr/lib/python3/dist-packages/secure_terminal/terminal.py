@@ -2231,9 +2231,15 @@ class SecureTerminal(QPlainTextEdit):
             return False
         # The direct child is in the foreground: a bare LOGIN-shell prompt (nothing
         # to terminate), but for a `-- PROGRAM` tab that child IS the program to kill.
-        if (self._pid is not None and pgrp == os.getpgid(self._pid)
-                and self._command is None):
-            return False
+        # getpgid can race the child's death (it may exit between the enable-poll and
+        # the click) -- a gone child means nothing to signal (as has_foreground_program).
+        if self._pid is not None and self._command is None:
+            try:
+                child_pgrp = os.getpgid(self._pid)
+            except ProcessLookupError:
+                return False
+            if pgrp == child_pgrp:
+                return False
         try:
             os.killpg(pgrp, signal.SIGTERM)
         except OSError:
