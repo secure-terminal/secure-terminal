@@ -117,7 +117,7 @@ from secure_terminal.sanitize import (
     THEMES, BASE_POINT_SIZE, ANSI_PALETTE, DISPLAY_MODES,
     colors_allowed, too_close, luminance, sanitize_paste,
     sanitize_paste_unicode, sanitize_clipboard, sanitize_clipboard_unicode,
-    paste_findings, tui_cell, sanitize_title,
+    paste_findings, paste_is_multiline, tui_cell, sanitize_title,
     feed_line_edits, cells_to_runs, cells_display_col, MARK_KEY, WRAP_NL, BOX,
     render_output,
     wants_full_screen, leaves_full_screen, wants_screen_repaint, wants_clear,
@@ -175,6 +175,23 @@ _OSC_CODE_RE = re.compile(r'\x1b\](\d+)')
 # acts on these to snapshot/restore the primary screen at the exact boundary.
 _ALT_ENTER_BYTES = (b'\x1b[?1049h', b'\x1b[?1047h', b'\x1b[?47h')
 _ALT_LEAVE_BYTES = (b'\x1b[?1049l', b'\x1b[?1047l', b'\x1b[?47l')
+# longest alt-screen marker, so a tail of (len-1) carried between reads reunites a
+# marker split across an os.read() boundary (F6).
+_ALT_MARKER_MAX = max(len(m) for m in _ALT_ENTER + _ALT_LEAVE)
+_ALT_MARKER_MAX_BYTES = max(len(m) for m in _ALT_ENTER_BYTES + _ALT_LEAVE_BYTES)
+
+
+def _alt_partial_tail(data):
+    """Length of the tail of `data` that is a PROPER prefix of an alt-screen marker,
+    i.e. it may be the START of a marker split across an os.read() boundary. 0 when
+    the tail is not a partial marker (so a COMPLETE marker at the end is not held back
+    -- that would delay its snapshot/restore, which is the whole point of feeding)."""
+    markers = _ALT_ENTER_BYTES + _ALT_LEAVE_BYTES
+    for k in range(min(_ALT_MARKER_MAX_BYTES - 1, len(data)), 0, -1):
+        tail = data[-k:]
+        if any(len(tail) < len(m) and m.startswith(tail) for m in markers):
+            return k
+    return 0
 # Synchronized output (DECSET private mode 2026): a program brackets a screen
 # update so the terminal shows the completed frame, never a half-drawn one. It is
 # a SET-mode with no reply -- purely a rendering hint -- so it is safe to honour
@@ -544,6 +561,8 @@ class SecureTerminal(QPlainTextEdit):
         # still fed) so a frame is shown whole. Watchdog bounds an unclosed update.
         self._sync_update = False
         self._sync_scan_carry = ''    # tail kept so a split ?2026 marker is seen
+        self._alt_scan_carry = ''     # tail kept so a split alt-screen marker is seen (CLI state)
+        self._alt_feed_carry = b''    # tail held so a split alt-screen marker is not fed mid-split (TUI)
         self._sync_timer = QTimer(self)
         self._sync_timer.setSingleShot(True)
         self._sync_timer.timeout.connect(self._end_sync_update)
@@ -1450,12 +1469,16 @@ class SecureTerminal(QPlainTextEdit):
         # Resolve enter/leave by LAST occurrence in the chunk, so a chunk that
         # carries both (one program quits and another starts) ends in the right
         # state rather than always enter-wins.
-        entered = wants_full_screen(text)
-        left = leaves_full_screen(text)
+        # Scan a tail-carried probe so an alt-screen marker split across an os.read()
+        # boundary is still seen (as the sync-2026 scan below does). F6.
+        alt_probe = self._alt_scan_carry + text
+        self._alt_scan_carry = text[-(_ALT_MARKER_MAX - 1):]
+        entered = wants_full_screen(alt_probe)
+        left = leaves_full_screen(alt_probe)
         alt_changed = False
         if entered or left:
-            last_enter = max((text.rfind(s) for s in _ALT_ENTER), default=-1)
-            last_leave = max((text.rfind(s) for s in _ALT_LEAVE), default=-1)
+            last_enter = max((alt_probe.rfind(s) for s in _ALT_ENTER), default=-1)
+            last_leave = max((alt_probe.rfind(s) for s in _ALT_LEAVE), default=-1)
             was_alt = self._alt_screen
             self._alt_screen = last_enter > last_leave
             alt_changed = self._alt_screen != was_alt
@@ -1491,7 +1514,15 @@ class SecureTerminal(QPlainTextEdit):
         if self.tui_active() and pyte is not None:
             if self._screen is None:
                 self._make_screen()
-            self._feed_stream(data)
+            # Hold back a possible split alt-screen marker tail so _feed_stream never
+            # snapshots/restores on HALF a marker; it is reunited with the next read
+            # (flushed at EOF below). F6.
+            feed = self._alt_feed_carry + data
+            k = _alt_partial_tail(feed)         # hold back ONLY a split-marker tail
+            self._alt_feed_carry = feed[len(feed) - k:] if k else b''
+            self._feed_stream(feed[:len(feed) - k] if k else feed)
+        else:
+            self._alt_feed_carry = b''          # CLI mode does not stream-feed; drop any tail
         if sync_end:
             self._end_sync_update()            # closing chunk fed -> paint the frame
 
@@ -2732,8 +2763,12 @@ class SecureTerminal(QPlainTextEdit):
         # input until a choice dispatches or rejects it (dispatch_pending_paste).
         # The hard gate is preserved -- no byte reaches the shell until you choose.
         has_unicode, has_control = paste_findings(raw)
+        # A multi-line paste would run a hidden second command the instant you paste,
+        # so hold it for review too -- otherwise a pure-ASCII pastejacking payload
+        # bypasses the default 'unicode' review the settings promise covers it (F3).
+        risky = has_unicode or has_control or paste_is_multiline(raw)
         warn = self._paste_warn
-        if warn == 'always' or (warn == 'unicode' and (has_unicode or has_control)):
+        if warn == 'always' or (warn == 'unicode' and risky):
             self._pending_paste = raw
             self._review_active = True
             self.paste_review_requested.emit(raw, int(self._paste_delay))

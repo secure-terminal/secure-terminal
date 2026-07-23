@@ -890,6 +890,15 @@ def paste_findings(text):
     return has_unicode, has_control
 
 
+def paste_is_multiline(text):
+    """True when a paste would run MORE than one line: a newline (or carriage
+    return, which the shell executes) appears before the final character. A single
+    line with a trailing newline is NOT flagged (that is one command). Used to hold
+    a multi-line paste for review even when it is pure ASCII, so a hidden second
+    command in a pastejacking payload cannot execute the instant you paste."""
+    return '\n' in text[:-1] or '\r' in text[:-1]
+
+
 def classify_paste(text):
     """Name and count the classes of non-plain-ASCII characters in a paste, so a
     warning can say exactly what is hidden in it ("2 bidirectional controls, 1

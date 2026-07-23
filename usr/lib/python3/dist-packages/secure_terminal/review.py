@@ -197,6 +197,11 @@ class ReviewBar(QWidget):
         self._term = None
         self.setVisible(False)
 
+    def reviewed_term(self):
+        """The terminal whose held text this bar is reviewing, or None -- so a
+        closing tab can hide its own review before the terminal is destroyed."""
+        return self._term
+
     # -- internals ------------------------------------------------------------
     def _choose(self, action):
         # Single-shot: clear _term before dispatching so a second click (a

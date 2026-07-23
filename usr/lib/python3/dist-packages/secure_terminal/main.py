@@ -966,7 +966,16 @@ class MainWindow(QMainWindow):
                 if isinstance(lines, int) and lines > 0:
                     text = '\n'.join(text.split('\n')[-lines:])
                 if len(text) > _DUMP_MAX:
-                    text = text[-_DUMP_MAX:]     # tail-cap to stay under the frame
+                    text = text[-_DUMP_MAX:]     # fast tail-cap by character count
+                # A character cap is not enough: json.dumps (ensure_ascii) expands
+                # each non-ASCII char to a 6-byte \uXXXX escape (and doubles "/\), so
+                # the ENCODED reply can still overflow the IPC frame -- which the
+                # client then drops, silently failing the dump. Trim the tail until
+                # the encoded payload fits under the frame cap. (F4)
+                while text and len(
+                        json.dumps({'ok': True, 'text': text}).encode('utf-8')
+                        ) > ipc._MAX_REQUEST:
+                    text = text[len(text) // 8 + 1:]
                 return {'ok': True, 'text': text}
             title = request.get('title')
             if not isinstance(title, str):
@@ -1139,6 +1148,11 @@ class MainWindow(QMainWindow):
                 'A program is still running in this tab. Close it anyway?',
                 [term]):
             return
+        # If this tab holds a paste/copy review, hide the bar first -- otherwise it
+        # keeps the about-to-be-destroyed terminal and its buttons would dispatch
+        # onto a deleted C++ object (RuntimeError). F2.
+        if self._review_bar.reviewed_term() is term:
+            self._review_bar.hide_review()
         term.shutdown()
         self._user_titles.pop(term, None)
         self._prog_titles.pop(term, None)
