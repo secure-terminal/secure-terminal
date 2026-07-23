@@ -27,3 +27,18 @@ reviewer if a detached run comes back empty.
   claim scoping). Only the independent `claude` sweep is outstanding.
 - Action: re-run on a backoff once the sandbox reviewer is reachable; fold in any
   findings and delete this entry.
+
+### claude final pass on the #93/#94/#95/#98/#99 session work (58b780f..00b71f4)
+- Scope: `ai-review --with claude 58b780f` -- the terminate/foreground-pgrp +
+  self-kill guard (#93), the EL-burst TUI advisory (#94), the clickable settings
+  InfoTip (#95), the XCB-teardown close fix (#98), and the restore-placeholder
+  machinery + its interaction hardening (#99).
+- Files: `usr/lib/python3/dist-packages/secure_terminal/{main.py,terminal.py,sanitize.py}`.
+- Why pending: the local `claude` reviewer timed out with no output on BOTH a
+  full-session and a 27-line scope (same recurring sandbox headless issue as the
+  entry above) -- NO-RESULT, not a clean pass.
+- coderabbit already ran clean; its two findings (placeholder interaction safety,
+  placeholder label field) were reconciled, fixed (00b71f4), and gated at 100%.
+  Only the independent `claude` sweep is outstanding.
+- Action: re-run on a backoff once the sandbox reviewer is reachable; fold in any
+  findings and delete this entry.
