@@ -78,9 +78,11 @@ def _write_atomic(path, text):
     os.replace(tmp, path)
 
 
-def save(tabs):
+def save(tabs, window=None):
     """Write the list of tab dicts: each tab's 'text' scrollback to its own
-    tab-<n>.log, the rest as the index in session.json. Never raises."""
+    tab-<n>.log, the rest as the index in session.json. `window` is an opaque
+    base64 window-geometry blob (Qt saveGeometry, size + maximized state), kept
+    so the next start reopens at the same size. Never raises."""
     path = session_path()
     try:
         os.makedirs(_state_dir(), exist_ok=True)
@@ -93,9 +95,25 @@ def save(tabs):
         for stale in _log_indices():
             if stale >= len(tabs):
                 _remove(_log_path(stale))
-        _write_atomic(path, json.dumps({'tabs': index}))
+        payload = {'tabs': index}
+        if isinstance(window, str) and window:
+            payload['window'] = window
+        _write_atomic(path, json.dumps(payload))
     except OSError:
         pass                    # a failed session save is never fatal
+
+
+def load_window():
+    """Return the saved base64 window-geometry blob, or None. Never raises."""
+    try:
+        with open(session_path(), encoding='utf-8') as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    window = data.get('window')
+    return window if isinstance(window, str) and window else None
 
 
 def load():

@@ -13,7 +13,8 @@ import argparse
 import json
 
 from PyQt6.QtCore import (
-    QTimer, Qt, QUrl, QRect, QPoint, QObject, QEvent, qInstallMessageHandler)
+    QTimer, Qt, QUrl, QRect, QPoint, QByteArray, QObject, QEvent,
+    qInstallMessageHandler)
 from PyQt6.QtGui import (
     QAction, QActionGroup, QKeySequence, QIcon, QColor, QPixmap,
     QPainter, QBrush, QFont, QDesktopServices, QCursor,
@@ -570,6 +571,10 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, self._restore_next_deferred)
         if self.tabs.count() == 0:
             self.new_tab()
+
+        # Reopen at the last session's size + maximized state (over the default
+        # resize above), before the caller show()s the window.
+        self._restore_window_geometry()
 
         # Enable Terminate only while a program (not just the shell) is running.
         # There is no event for a foreground-pgrp change, so poll cheaply.
@@ -1901,6 +1906,20 @@ class MainWindow(QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
+
+    def _window_state(self):
+        """The current window geometry as a base64 string (Qt saveGeometry keeps
+        the size AND the maximized/full-screen state), for the saved session."""
+        return bytes(self.saveGeometry().toBase64()).decode('ascii')
+
+    def _restore_window_geometry(self):
+        """Reopen at the last session's window size + maximized state. A no-op when
+        session persistence is off or nothing was saved (keeps the default size)."""
+        if not self._persist_session:
+            return
+        blob = session.load_window()
+        if blob:
+            self.restoreGeometry(QByteArray.fromBase64(blob.encode('ascii')))
 
     def _connect_bell_tray(self, term):
         term.bell_tray.connect(lambda label: self._on_bell_tray(term, label))
@@ -3359,7 +3378,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         if self._persist_session:
-            session.save(self._session_tabs())
+            session.save(self._session_tabs(), self._window_state())
         else:
             session.clear()
         for i in range(self.tabs.count()):
