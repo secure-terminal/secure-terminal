@@ -39,25 +39,21 @@ entry in the LOCAL system terminfo db does not help remote hosts.
   compatibility page's terminfo comparison.
 - Worth reconsidering `dumb` for CLI mode if ssh-in-CLI is a common workflow.
 
-## 3. CLI-mode redraw garble on completion / wrapped lines
+## 3. CLI-mode tab-completion garble -- FIXED (residual narrow-width limit)
 
-An interactive shell's line editor (zsh's zle) redraws the prompt line with
-optimised, cursor-RELATIVE sequences: differential rewrites (`CSI nD`/`CSI nC` +
-`CSI K`), and partial-line reprints after a completion listing. These assume the
-terminal can move the cursor UP to a previous row -- a capability the restricted
-`secure-terminal` entry deliberately cancels (`cuu@`). With no cursor-up, zle
-falls back to redraws that operate on the current DISPLAY row; when the prompt +
-input WRAP past the terminal width, the CLI line renderer (which models one
-logical line) and zle's wrapped-row cursor math diverge, and the line garbles.
+Was: `ls a<Tab>` cycling completion candidates rendered garbage, e.g.
+`aiuto-generated-dan-pages`. Root cause: a completion menu emits a BEL (`\x07`),
+and the CLI line renderer treated BEL as a display cell, shifting the cursor one
+column off; zle's following backspace+reprint then duplicated a character. BEL is
+cursor-neutral on every real terminal (it rings the bell, writes no glyph, moves
+no column) -- now consumed in `feed_line_edits`, aligning with `render_output`
+which already dropped it. Fixed + regression-tested at all realistic widths.
 
-- Symptom: `ls a<Tab>` cycling long candidates can render e.g.
-  `aiuto-generated-dan-pages` or corrupt the prompt to `-terminal% ...`.
-- Only bites when the prompt+input is long enough to wrap; short lines are fine.
-- Root cause is structural: faithfully replaying a full terminal's cursor-relative
-  redraws in a line-oriented renderer under a no-cursor-up terminfo. `dumb` (even
-  fewer caps) does not obviously fix it -- zle still cannot move up.
-- Options: (a) a substantial CLI-renderer investment to track display-row cursor
-  position across wraps; (b) report a very wide width to the shell so its line
-  never wraps (display trade-off); (c) reconsider the CLI terminfo/mode approach.
-  This is the strongest of the accumulating signals that the custom restricted
-  entry, while elegant, is fragile against real interactive redraws.
+Residual (not the reported bug): at a terminal SO narrow that the prompt itself
+wraps (< ~50 columns for a 52-char prompt) AND a candidate spans multiple display
+rows, zle -- which cannot move the cursor UP under the restricted entry (`cuu@`)
+-- emits its own broken no-cursor-up redraw (a partial reprint that does not
+reconstruct the row). No renderer can salvage that; a real no-cursor-up terminal
+shows the same garble. It only bites below a normally-usable width. If it ever
+matters, the fix is at the terminfo level (a wide reported width, or restoring a
+minimal up-capability), not in the renderer.

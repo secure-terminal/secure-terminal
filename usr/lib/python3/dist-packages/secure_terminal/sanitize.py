@@ -561,6 +561,14 @@ def feed_line_edits(cells, col, sgr, raw, max_line=0):
         elif ch == '\x08':
             if col > 0:
                 col -= 1
+        elif ch == '\x07':
+            # BEL is cursor-neutral on every real terminal: it rings the bell
+            # (handled by has_bell over the raw text) and writes NO glyph and moves
+            # NO column. Treating it as a cell used to shift the cursor one column
+            # off on any line-editor redraw that beeps -- a completion menu emits a
+            # BEL -- so a following \b + reprint duplicated a character (garbled
+            # tab-completion). Consume it.
+            pass
         else:
             # DEFERRED autowrap (VT "last column" behaviour): filling the last
             # column leaves the cursor there; the NEXT printable char wraps to a
