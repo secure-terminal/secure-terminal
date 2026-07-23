@@ -3162,7 +3162,11 @@ class MainWindow(QMainWindow):
         tui.setEnabled(tui_available())
         _tip_row(rendering, 'TUI mode (new tabs)', tui,
                  'Start new tabs in TUI mode (for full-screen programs like vim or '
-                 'htop) instead of the safe line mode. Needs python3-pyte.')
+                 'htop) instead of the default CLI mode. CLI mode is APPEND-ONLY and '
+                 'tamper-evident -- output can only be added, never moved or erased, '
+                 'so a hostile program cannot rewrite what you already saw. TUI mode '
+                 'interprets cursor/screen escapes inside an isolated grid so full-'
+                 'screen programs can redraw. Needs python3-pyte.')
 
         # granular OSC feature toggles: each off by default, its risk coloured in
         # the label and its layman attack-surface hint as the tooltip.
