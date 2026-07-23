@@ -3827,7 +3827,16 @@ def main():
                         pass               # best-effort teardown; never block quit
     app.aboutToQuit.connect(_shutdown_all_tabs)
 
-    return app.exec()
+    rc = app.exec()
+    # Delete the window -- and with it every child widget and its native XCB
+    # handle -- explicitly WHILE the QApplication and its XCB connection are still
+    # alive, then flush the deferred deletion now. Otherwise Python GCs the widgets
+    # during interpreter teardown, AFTER Qt has torn the XCB connection down, and
+    # the native-handle destructors talk to a dead connection -> SIGSEGV on quit
+    # (only under XCB; offscreen/Wayland do not hit it).
+    window.deleteLater()
+    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    return rc
 
 
 if __name__ == '__main__':  # pragma: no cover - module entry guard
