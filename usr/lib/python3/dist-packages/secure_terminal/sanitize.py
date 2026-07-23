@@ -134,8 +134,8 @@ _TRAILING_ESCAPE = re.compile(
     r'|[PX^_][^\x1b]*'       # DCS/SOS/PM/APC: ESC P/X/^/_ ... awaiting ST (BEL is body)
     r'|\[[0-?]*[ -/]*'       # CSI: ESC [ params/intermediates, no final byte yet
     r'|[ -/]*'               # ESC + intermediate bytes, awaiting a final (charsets)
-    r')?$'
-)
+    r')?\Z'                  # \Z, not $: $ also matches BEFORE a trailing newline,
+)                            # so 'ESC \n' would match the ESC and DROP the newline
 
 
 def has_bell(text):
