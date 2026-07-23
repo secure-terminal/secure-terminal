@@ -739,9 +739,12 @@ class SecureTerminal(QPlainTextEdit):
         the programs it launches advertise what the mode can render -- without a
         restart (the shell re-reads terminfo live). Sent as a plain, VISIBLE command
         so the switch is transparent: you see exactly the `export TERM=...` that
-        reconfigured the shell, rather than a hidden change."""
+        reconfigured the shell, rather than a hidden change. Terminated with CR
+        (\\r, the same byte Enter sends), NOT \\n: an interactive shell's line
+        editor (zsh's zle) binds accept-line to CR, so a bare \\n leaves the command
+        sitting UNSUBMITTED at the prompt."""
         term, _ = self._child_term()
-        self._write(('export TERM=%s\n' % term).encode())
+        self._write(('export TERM=%s\r' % term).encode())
 
     def _grid_mode(self):
         """True whenever TUI mode is on: the pyte grid owns the screen (with its
