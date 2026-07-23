@@ -998,7 +998,18 @@ class MainWindow(QMainWindow):
         and renders instantly."""
         ph = QWidget()
         self._pending_restore[ph] = info
-        label = info.get('title') or 'shell'
+        # Label the placeholder like its real tab will be: the saved user name, else
+        # the saved cwd's basename (what cwd_basename() shows), else "shell" -- so the
+        # label does not visibly change when the real shell swaps in.
+        name = info.get('name')
+        cwd = info.get('cwd')
+        if name:
+            label = name
+        elif isinstance(cwd, str) and cwd:
+            label = '~' if cwd == os.path.expanduser('~') \
+                else (os.path.basename(cwd.rstrip('/')) or '/')
+        else:
+            label = 'shell'
         self.tabs.insertTab(min(at, self.tabs.count()), ph, label)
         self._renumber_tabs()
         return ph
@@ -1102,6 +1113,16 @@ class MainWindow(QMainWindow):
     def close_tab(self, index):
         term = self.tabs.widget(index)
         if term is None:
+            return
+        if not isinstance(term, SecureTerminal):
+            # a restore placeholder: no shell to confirm or shut down -- drop it from
+            # both pending collections and remove the bar entry.
+            self._pending_restore.pop(term, None)
+            if term in self._deferred_restore:
+                self._deferred_restore.remove(term)
+            self.tabs.removeTab(index)
+            term.deleteLater()
+            self._renumber_tabs()
             return
         if not self._confirm_running_close(
                 'Close tab?',
@@ -1396,12 +1417,13 @@ class MainWindow(QMainWindow):
 
     def _update_terminate_enabled(self):
         term = self.current()
-        self.act_terminate.setEnabled(
-            term is not None and term.has_foreground_program())
+        if not isinstance(term, SecureTerminal):
+            self.act_terminate.setEnabled(False)   # a placeholder selected mid-restore
+            return
+        self.act_terminate.setEnabled(term.has_foreground_program())
         # Keep the current tab's default label in step with its working directory
         # (only when it is not overridden by a user or program title).
-        if term is not None and not self._user_titles.get(term) \
-                and not self._prog_titles.get(term):
+        if not self._user_titles.get(term) and not self._prog_titles.get(term):
             self._refresh_tab_label(term)
 
     def current(self):
