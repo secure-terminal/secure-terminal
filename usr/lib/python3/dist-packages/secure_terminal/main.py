@@ -2967,7 +2967,7 @@ class MainWindow(QMainWindow):
 
         # granular OSC feature toggles: each off by default, its risk coloured in
         # the label and its layman attack-surface hint as the tooltip.
-        osc_section = _section('OSC escape features (all off by default)')
+        osc_section = _section('OSC escape features')
         osc_checks = {}
         _risk_html = {
             'low': '',
