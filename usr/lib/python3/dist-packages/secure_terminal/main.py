@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QToolBar, QSpinBox, QLabel,
     QWidget, QSizePolicy, QFileDialog, QInputDialog, QColorDialog,
     QMenu, QDialog, QGridLayout, QPushButton, QLineEdit,
-    QVBoxLayout, QHBoxLayout, QPlainTextEdit, QButtonGroup, QFrame,
+    QVBoxLayout, QHBoxLayout, QPlainTextEdit, QButtonGroup, QFrame, QScrollArea,
     QComboBox, QCheckBox, QFormLayout, QMessageBox, QKeySequenceEdit,
     QTextEdit, QFontDialog, QFontComboBox, QGroupBox, QToolButton,
 )
@@ -236,11 +236,35 @@ def _select_labels(widget, scale=100):
             _UI_BASE_POINT = _base if _base > 0 else 10.0
         font.setPointSizeF(_UI_BASE_POINT * scale / 100.0)
         widget.setFont(font)
+        # A scaled dialog must never grow past the screen (it would draw off-screen,
+        # unreachable). Cap it to the available screen; content beyond that scrolls
+        # (dialogs that opt into a scroll area) rather than overflowing.
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            widget.setMaximumSize(avail.width(), avail.height())
     for label in widget.findChildren(QLabel):
         label.setTextInteractionFlags(
             label.textInteractionFlags()
             | Qt.TextInteractionFlag.TextSelectableByMouse
             | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+
+
+class _ZoomDialog(QDialog):
+    """A dialog whose Ctrl+mousewheel live-zooms the chrome (UI) scale, so a
+    settings dialog can be enlarged on the fly like the terminal text. Set
+    `on_zoom(direction)` (+1 up / -1 down); a plain wheel scrolls as normal."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.on_zoom = None
+
+    def wheelEvent(self, event):
+        if self.on_zoom is not None \
+                and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.on_zoom(1 if event.angleDelta().y() >= 0 else -1)
+            event.accept()
+        else:
+            super().wheelEvent(event)
 
 
 class InfoTip(QLabel):
@@ -3174,10 +3198,17 @@ class MainWindow(QMainWindow):
         """One dialog for the defaults that otherwise live scattered across the
         View menu. On accept the choices apply to every open tab and become the
         default for new ones."""
-        dialog = QDialog(self)
+        dialog = _ZoomDialog(self)      # Ctrl+wheel live-zooms the chrome (below)
         dialog.setWindowTitle('Global settings')
         outer = QVBoxLayout(dialog)
-        outer.setSpacing(12)
+        # Scroll the sections so a large Menu-size scale (or a small screen) scrolls
+        # rather than overflowing off-screen; the buttons stay pinned below.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setSpacing(12)
 
         # Grouped sections instead of one long flat list: each QGroupBox holds a
         # right-aligned form so related settings read as a unit.
@@ -3187,7 +3218,7 @@ class MainWindow(QMainWindow):
             sub.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
             sub.setContentsMargins(12, 8, 12, 10)
             sub.setSpacing(8)
-            outer.addWidget(box)
+            content_layout.addWidget(box)
             return sub
 
         # Every settings row carries an explanation. A trailing "(i)" marker makes
@@ -3354,6 +3385,8 @@ class MainWindow(QMainWindow):
                  "Reopen the previous session's tabs and their scrollback (and "
                  'window size) when secure-terminal starts.')
 
+        scroll.setWidget(content)           # all sections scroll; buttons pinned below
+        outer.addWidget(scroll)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         cancel = QPushButton('Cancel')
@@ -3364,6 +3397,17 @@ class MainWindow(QMainWindow):
         buttons.addWidget(cancel)
         buttons.addWidget(apply_all)
         outer.addLayout(buttons)
+
+        def _live_zoom(direction, _dlg=dialog, _spin=ui_scale):
+            # Ctrl+wheel: step the chrome scale and re-apply it to the OPEN dialog.
+            new = max(UI_SCALE_MIN,
+                      min(UI_SCALE_MAX, self._ui_scale + direction * UI_SCALE_STEP))
+            if new != self._ui_scale:
+                self._ui_scale = new
+                _spin.setValue(new)         # keep the Menu-size field in step
+                _select_labels(_dlg, new)   # live re-scale (base captured once)
+                self._persist()
+        dialog.on_zoom = _live_zoom
 
         _select_labels(dialog, self._ui_scale)
         if dialog.exec() != QDialog.DialogCode.Accepted:
