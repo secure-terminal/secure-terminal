@@ -1906,12 +1906,15 @@ class SecureTerminal(QPlainTextEdit):
 
     def _osc_clipboard(self, params):
         """OSC 52 WRITE: <selection>;<base64>. The decoded text is filtered to
-        PRINTABLE characters (plus tab and newline) before it reaches the system
+        printable ASCII (plus tab and newline) before it reaches the system
         clipboard, and bounded in size -- so a program cannot smuggle a bidi
         override, a zero-width / invisible character or a C0/C1 control onto the
         clipboard (the same hazard the paste path drops), which a later paste into
-        any application would otherwise carry. (A read query is handled separately
-        in _handle_osc, gated per tab.)"""
+        any application would otherwise carry. ASCII-only (not the unicode-keeping
+        clipboard filter the USER-initiated copy uses): this write is driven by
+        untrusted program output with no review, so a homoglyph must not ride onto
+        the system clipboard to deceive a paste into another application. (A read
+        query is handled separately in _handle_osc, gated per tab.)"""
         parts = params.split(b';', 1)
         if len(parts) != 2:
             return
@@ -1922,7 +1925,7 @@ class SecureTerminal(QPlainTextEdit):
             text = base64.b64decode(payload, validate=True).decode('utf-8', 'replace')
         except (ValueError, base64.binascii.Error):
             return
-        QGuiApplication.clipboard().setText(sanitize_clipboard_unicode(text))
+        QGuiApplication.clipboard().setText(sanitize_clipboard(text))
 
     def _osc_cwd(self, params):
         """OSC 7: file://HOST/PATH working-directory report. Used for the tab; the
