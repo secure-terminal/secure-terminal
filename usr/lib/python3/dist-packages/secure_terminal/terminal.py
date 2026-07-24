@@ -11,14 +11,15 @@ Design (see https://secure-terminal.github.io):
 - DISPLAY is printable-ASCII by default. Program output is passed through
   render_output(): ANSI/OSC escape sequences are removed and, in the default
   'box' mode, every character that is not printable ASCII (plus tab and
-  newline) becomes '_', the way sanitize-string/stcat neutralize a log. There is
+  newline) becomes a box placeholder (the U+25A1 white square, exported as ASCII
+  '_' on copy), the way sanitize-string/stcat neutralize a log. There is
   no escape parser, so a hostile filename, a forged status line or a Trojan-
   Source comment cannot redraw or reorder what you read. Two optional display
   modes trade some of that for readability, per tab: 'show' renders a non-ASCII
   character as its glyph when it is printable (str.isprintable() excludes the
   invisible, bidi and format characters that make unicode deceptive), so a log
   with legitimate unicode is readable while the dangerous classes still collapse
-  to '_'; 'reveal' shows every non-ASCII character as a <U+XXXX> badge so you can
+  to the box; 'reveal' shows every non-ASCII character as a <U+XXXX> badge so you can
   inspect exactly what is there. Two cursor controls are honored, and both are
   necessary: the interactive shell echoes its line editing with backspace and
   carriage return (readline sends "\b \b" to rub out a character and redraw after
@@ -464,7 +465,7 @@ class SecureTerminal(QPlainTextEdit):
         # optional ANSI colours (off by default); SGR parser state. Also set from
         # the ctor before the history render, for the same render-once reason.
         self._colors = bool(colors)
-        self._markings = bool(markings)   # colour the '_' / badge by risk class
+        self._markings = bool(markings)   # colour the box / badge by risk class
         self._sgr_reset()
 
         # Scrollback limit in lines. Default to a bounded window (like every
@@ -1302,7 +1303,7 @@ class SecureTerminal(QPlainTextEdit):
     def _effective_colors(self):
         return self._colors and colors_allowed()
 
-    # -- coloured risk markings (the '_' / <U+XXXX> badge, by risk class) -------
+    # -- coloured risk markings (the box / <U+XXXX> badge, by risk class) -------
     def apply_markings(self, enabled):
         if bool(enabled) == self._markings:
             return
@@ -2753,7 +2754,7 @@ class SecureTerminal(QPlainTextEdit):
 
     def event(self, e):
         # Hovering a neutralized/revealed character explains what it actually is --
-        # name, category, escape -- because the display ("_", a <U+XXXX> badge, or
+        # name, category, escape -- because the display (a box, a <U+XXXX> badge, or
         # a look-alike glyph) does not, on its own, reveal its identity.
         if e.type() == QEvent.Type.ToolTip:
             pos = self.viewport().mapFromGlobal(e.globalPos())

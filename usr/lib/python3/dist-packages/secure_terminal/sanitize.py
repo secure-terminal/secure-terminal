@@ -517,7 +517,8 @@ def feed_line_edits(cells, col, sgr, raw, max_line=0):
 
     Honors \r, \b, \n and the line-local CSI ops (see _LINE_CSI_RE); folds SGR into
     `sgr` (so colour survives a redraw); strips every other escape and treats a
-    stray control byte as an overwrite cell (rendered '_' later). Returns
+    stray control byte as an overwrite cell (rendered as the box placeholder
+    later). Returns
     (completed, cells, col, sgr, wraps): cell-lists finished by a newline or an
     autowrap, plus the new current buffer, cursor column, SGR state, and a bool
     per completed line -- True where the line ended by a soft autowrap (so the
@@ -698,9 +699,9 @@ def _ascii_confusables():
     return _ASCII_CONFUSABLES
 
 
-# Risk class of a neutralized/revealed character, so its marking (the box, the '_'
-# or the <U+XXXX> badge) can be coloured by WHY the character is dangerous, not
-# just that it is. Ordered worst-first.
+# Risk class of a neutralized/revealed character, so its marking (the box
+# placeholder or the <U+XXXX> badge) can be coloured by WHY the character is
+# dangerous, not just that it is. Ordered worst-first.
 def marking_class(cp):
     if (0x202A <= cp <= 0x202E or 0x2066 <= cp <= 0x2069
             or cp in (0x200E, 0x200F, 0x061C)):
@@ -923,13 +924,16 @@ def tui_cell(ch, mode):
     one column), so this accepts a string of any length -- never assume length 1.
     The whole grapheme is kept only when every codepoint is safe: printable ASCII,
     or, in 'show'/'reveal', printable non-ASCII (str.isprintable() excludes the
-    invisible, bidi and format classes). Otherwise the cell becomes '_'. The
+    invisible, bidi and format classes). Otherwise the cell becomes the box
+    placeholder -- the SAME single-column mark CLI box/show mode draws (a reveal
+    <U+XXXX> badge is many columns wide and cannot fit one grid cell), so a
+    neutralized cell looks identical in both modes instead of a bare '_'. The
     result is a single display unit, so the grid and the neutralization hold."""
     if not ch:
         return ' '
     if all(_cell_cp_safe(ord(c), mode) and c.isprintable() for c in ch):
         return ch
-    return '_'
+    return BOX
 
 
 def paste_findings(text):

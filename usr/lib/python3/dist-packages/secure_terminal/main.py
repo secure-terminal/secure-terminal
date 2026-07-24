@@ -285,10 +285,14 @@ class InfoTip(QLabel):
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse
                                      | Qt.TextInteractionFlag.TextSelectableByKeyboard)
         self.setWordWrap(True)
-        self.setMargin(7)
-        self.setMaximumWidth(460)
-        self.setStyleSheet('QLabel{background:#fdf6d8;color:#1a1a1a;'
-                           'border:1px solid #b9a24a;border-radius:5px}')
+        # Padding via the stylesheet (not setMargin) so the rounded border wraps
+        # the text snugly; a narrower cap keeps the tip a tidy column instead of a
+        # wide slab.
+        self.setMargin(0)
+        self.setMaximumWidth(340)
+        self.setStyleSheet('QLabel{background:#fbf9f0;color:#23262b;'
+                           'border:1px solid #d0c9ad;border-radius:6px;'
+                           'padding:6px 9px}')
         self._source = None
         self._poll = QTimer(self)
         self._poll.setInterval(150)
@@ -304,6 +308,12 @@ class InfoTip(QLabel):
         self.adjustSize()
         self.move(global_pos + QPoint(12, 18))
         self.show()
+        # A frameless stay-on-top tool window can still be painted under a modal
+        # dialog or a menu popup that opened after it; raise it so it floats above
+        # the settings menu / OSC-features submenu that anchored it. Kept parented
+        # to the main window (stable lifetime -- reparenting to the transient dialog
+        # would destroy the shared tip when that dialog closes).
+        self.raise_()
         self._poll.start()
 
     def _check_pointer(self):
@@ -359,6 +369,13 @@ class _ToolTipFilter(QObject):
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.ToolTip and isinstance(obj, QWidget):
+            # A menu hint is left to Qt's own menu tooltip (menus opt in via
+            # setToolTipsVisible): it stacks ABOVE the open popup, whereas our
+            # tool-window tip would paint behind the menu (the "OSC-features
+            # popups are below the settings menu" report). Copyability matters for
+            # the settings-dialog rows, not for a menu that closes on click.
+            if isinstance(obj, QMenu):
+                return super().eventFilter(obj, event)
             text = obj.toolTip()
             if text:
                 self._tip.show_for(obj, text, event.globalPos(),
@@ -1535,10 +1552,16 @@ class MainWindow(QMainWindow):
                 if isinstance((w := self.tabs.widget(i)), SecureTerminal)]
 
     def show_info_tip(self, anchor, text):
-        """Show the shared copyable InfoTip for a settings row on demand (a click on
-        its "(i)" marker), anchored just under the label -- reliable and re-openable
-        without waiting on a hover delay."""
-        self._tip_filter._tip.show_for(
+        """Toggle the shared copyable InfoTip for a settings row (a click on its
+        "(i)" marker), anchored just under the label -- reliable and re-openable
+        without waiting on a hover delay. A second click on the SAME marker hides
+        it again rather than re-opening a stacked copy."""
+        tip = self._tip_filter._tip
+        if tip.isVisible() and tip._source is anchor:
+            tip.hide()
+            tip._poll.stop()
+            return
+        tip.show_for(
             anchor, text, anchor.mapToGlobal(QPoint(0, anchor.height())),
             self.current_zoom_percent())
 
@@ -2333,7 +2356,18 @@ class MainWindow(QMainWindow):
         self._paste_delay = int(seconds)
         for t in self._real_terms():
             t.apply_paste_delay(seconds)
+        self._sync_paste_delay_menu()
         self._persist()
+
+    def _sync_paste_delay_menu(self):
+        """Reflect the current paste delay in the View -> Paste delay check-marks.
+        The menu is built once, so a change via the settings dialog (or a custom
+        config value outside the presets) would otherwise leave a stale or missing
+        mark. A non-preset value leaves every entry unchecked."""
+        for secs, act in getattr(self, '_paste_delay_actions', {}).items():
+            want = secs == self._paste_delay
+            if act.isChecked() != want:
+                act.setChecked(want)
 
     def set_paste_warn(self, mode):
         """When to review a paste: always / unicode (default) / never. Applies to
@@ -2712,7 +2746,8 @@ class MainWindow(QMainWindow):
             'are easy to tell apart at a glance. On by default; a colour you set '
             'on a tab (right-click) overrides the automatic one.')
         self.act_auto_tab_colors.toggled.connect(self.set_auto_tab_colors)
-        view_menu.addAction(self.act_auto_tab_colors)
+        # Window-global (not per-tab): lives in Global settings, not this menu. The
+        # action is kept as the state-holder set_auto_tab_colors ticks.
 
         osc_notice_menu = view_menu.addMenu('Notify on &OSC use')
         self.act_osc_notice = QAction('&All OSC notices', self, checkable=True)
@@ -2731,6 +2766,40 @@ class MainWindow(QMainWindow):
             act.toggled.connect(lambda on, k=key: self.set_osc_notice_type(k, on))
             osc_notice_menu.addAction(act)
             self._osc_notice_actions[key] = act
+
+        # Granular OSC control: every way a program can reach OUT of the terminal,
+        # each individually toggleable with its layman attack-surface hint. All off
+        # by default; enabling one only has effect in TUI mode and dims the OSC
+        # security lamp by its risk class. Kept next to "Notify on OSC use" -- both
+        # govern the same OSC escapes.
+        osc_menu = view_menu.addMenu('&OSC features')
+        osc_menu.setToolTip('Each is a way a program can act on your system '
+                            '(title, clipboard, ...). All neutralized by default; '
+                            'enable at your own risk (only in TUI mode). iTerm2 '
+                            'file-transfer escapes (OSC 1337) are always '
+                            'neutralized and have no toggle -- they can never be '
+                            'safely enabled.')
+        _risk_tag = {'low': '', 'medium': '   [risk: medium]',
+                     'high': '   [RISK: HIGH]'}
+        for key, label, codes, _dflt, risk, hint in OSC_FEATURES:
+            act = QAction(label + '  (OSC ' + codes + ')', self, checkable=True)
+            act.setChecked(self._osc_defaults.get(key, False))
+            act.setToolTip(hint + _risk_tag[risk])
+            act.toggled.connect(lambda on, k=key: self.set_osc(k, on))
+            osc_menu.addAction(act)
+            self._osc_actions[key] = act
+        osc_menu.addSeparator()
+        self.act_clip_read_always = QAction(
+            'Always allow clipboard READ (all tabs, no prompt)', self, checkable=True)
+        self.act_clip_read_always.setChecked(self._osc_clipboard_read_always)
+        self.act_clip_read_always.setToolTip(
+            'Auto-answer OSC 52 clipboard-read requests in every tab WITHOUT the '
+            'once-per-tab prompt. HIGH RISK: any untrusted output could then read '
+            'your clipboard (passwords, keys). Off by default; only has effect where '
+            'the "System clipboard (read)" OSC feature is also enabled. A per-tab '
+            'Deny still wins over this.')
+        self.act_clip_read_always.toggled.connect(self.set_clipboard_read_always)
+        osc_menu.addAction(self.act_clip_read_always)
 
         bell_menu = view_menu.addMenu('&Bell')
         # Independent channels (not mutually exclusive): a BEL may ring any
@@ -2790,53 +2859,20 @@ class MainWindow(QMainWindow):
             'The tray shows only fixed text -- never a program-set title or other '
             'output -- so untrusted output cannot deceive you through it.')
         self.act_systray.toggled.connect(self.set_systray)
-        view_menu.addAction(self.act_systray)
-        # reflect the tray state onto the 'Tray popup' bell channel (grey it out when
-        # the tray is off) now that both actions exist.
+        # Window-global (not per-tab): lives in Global settings, not this menu. The
+        # action is kept as the state-holder set_systray ticks; the tray-icon and
+        # bell-channel wiring below still run at startup.
         self._update_bell_tray_action()
         if self._systray:
             self._tray_icon()          # show the icon at startup when enabled
 
         # act_title stays as a compatibility action (the combined title+notify
         # toggle used by the settings dialog / session), but is NOT shown in the
-        # menu: the granular OSC submenu below supersedes it.
+        # menu: the granular OSC submenu supersedes it.
         self.act_title = QAction('Allow program title / notifications', self,
                                  checkable=True)
         self.act_title.setChecked(self._default_allow_title)
         self.act_title.toggled.connect(self.set_allow_title)
-
-        # Granular OSC control: every way a program can reach OUT of the terminal,
-        # each individually toggleable with its layman attack-surface hint. All off
-        # by default; enabling one only has effect in TUI mode and dims the OSC
-        # security lamp by its risk class.
-        osc_menu = view_menu.addMenu('&OSC features')
-        osc_menu.setToolTip('Each is a way a program can act on your system '
-                            '(title, clipboard, ...). All neutralized by default; '
-                            'enable at your own risk (only in TUI mode). iTerm2 '
-                            'file-transfer escapes (OSC 1337) are always '
-                            'neutralized and have no toggle -- they can never be '
-                            'safely enabled.')
-        _risk_tag = {'low': '', 'medium': '   [risk: medium]',
-                     'high': '   [RISK: HIGH]'}
-        for key, label, codes, _dflt, risk, hint in OSC_FEATURES:
-            act = QAction(label + '  (OSC ' + codes + ')', self, checkable=True)
-            act.setChecked(self._osc_defaults.get(key, False))
-            act.setToolTip(hint + _risk_tag[risk])
-            act.toggled.connect(lambda on, k=key: self.set_osc(k, on))
-            osc_menu.addAction(act)
-            self._osc_actions[key] = act
-        osc_menu.addSeparator()
-        self.act_clip_read_always = QAction(
-            'Always allow clipboard READ (all tabs, no prompt)', self, checkable=True)
-        self.act_clip_read_always.setChecked(self._osc_clipboard_read_always)
-        self.act_clip_read_always.setToolTip(
-            'Auto-answer OSC 52 clipboard-read requests in every tab WITHOUT the '
-            'once-per-tab prompt. HIGH RISK: any untrusted output could then read '
-            'your clipboard (passwords, keys). Off by default; only has effect where '
-            'the "System clipboard (read)" OSC feature is also enabled. A per-tab '
-            'Deny still wins over this.')
-        self.act_clip_read_always.toggled.connect(self.set_clipboard_read_always)
-        osc_menu.addAction(self.act_clip_read_always)
 
         view_menu.addSeparator()
         sb_menu = view_menu.addMenu('&Scrollback')
@@ -2852,12 +2888,14 @@ class MainWindow(QMainWindow):
         pd_menu = view_menu.addMenu('&Paste delay')
         pd_group = QActionGroup(self)
         pd_group.setExclusive(True)
+        self._paste_delay_actions = {}
         for label, secs in PASTE_DELAY_CHOICES:
             act = QAction(label, self, checkable=True)
             act.setChecked(secs == self._paste_delay)
             act.triggered.connect(lambda _checked, n=secs: self.set_paste_delay(n))
             pd_group.addAction(act)
             pd_menu.addAction(act)
+            self._paste_delay_actions[secs] = act
 
         pw_menu = view_menu.addMenu('Paste &warning')
         pw_group = QActionGroup(self)
@@ -2953,6 +2991,12 @@ class MainWindow(QMainWindow):
         act_about = QAction(QIcon.fromTheme('help-about'), '&About', self)
         act_about.triggered.connect(self.show_about)
         help_menu.addAction(act_about)
+
+        # Show each menu's action tooltips as Qt's native menu tooltip (which
+        # stacks above the open popup), since _ToolTipFilter leaves QMenu hints to
+        # Qt so they no longer paint behind the submenu.
+        for _m in bar.findChildren(QMenu):
+            _m.setToolTipsVisible(True)
 
     # -- window keyboard shortcuts: documented + configurable -----------------
     def _bind(self, action, ident, default_seq):
@@ -3386,6 +3430,26 @@ class MainWindow(QMainWindow):
                  "Reopen the previous session's tabs and their scrollback (and "
                  'window size) when secure-terminal starts.')
 
+        # Window-global settings (one per application, never per-tab) live only
+        # here, not in the per-tab View menu.
+        window_box = _section('Window')
+        systray = QCheckBox()
+        systray.setChecked(self._systray)
+        systray.setEnabled('systray' not in self._locked)
+        _tip_row(window_box, 'System tray icon', systray,
+                 'Show a system-tray icon with a few fixed actions (Show/Hide '
+                 'window, New Tab, Quit) and enable the Tray-popup bell channel. '
+                 'Off by default. The tray shows only fixed text -- never a '
+                 'program-set title -- so untrusted output cannot deceive you '
+                 'through it.')
+        auto_tab_colors = QCheckBox()
+        auto_tab_colors.setChecked(self._auto_tab_colors)
+        auto_tab_colors.setEnabled('auto_tab_colors' not in self._locked)
+        _tip_row(window_box, 'Automatic tab colours', auto_tab_colors,
+                 'Give each new tab a colour that differs from its neighbour, so '
+                 'tabs are easy to tell apart at a glance. On by default; a colour '
+                 'you set on a tab (right-click) overrides the automatic one.')
+
         scroll.setWidget(content)           # all sections scroll; buttons pinned below
         outer.addWidget(scroll)
         buttons = QHBoxLayout()
@@ -3425,6 +3489,8 @@ class MainWindow(QMainWindow):
             'scrollback': scrollback.currentData(), 'paste_delay': pdelay.currentData(),
             'paste_warn': paste_warn.currentData(), 'copy_warn': copy_warn.currentData(),
             'persist': persist.isChecked(),
+            'systray': systray.isChecked(),
+            'auto_tab_colors': auto_tab_colors.isChecked(),
         })
 
     def _apply_global(self, opts):
@@ -3483,6 +3549,11 @@ class MainWindow(QMainWindow):
             # NB: bell is intentionally NOT applied here. This global-settings
             # dialog has no bell field, so touching it would silently reset each
             # tab's per-tab bell choice; the bell is managed via the View menu only.
+        if 'auto_tab_colors' in opts:
+            self.set_auto_tab_colors(opts['auto_tab_colors'])
+        if 'systray' in opts:
+            self.set_systray(opts['systray'])
+        self._sync_paste_delay_menu()   # menu check reflects the applied delay
         self.set_persist_session(opts['persist'])
         self._sync_chrome_to_tab()
         self._persist()
