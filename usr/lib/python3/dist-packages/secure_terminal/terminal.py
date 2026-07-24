@@ -2078,14 +2078,15 @@ class SecureTerminal(QPlainTextEdit):
     def _export_ascii(self, text):
         """Map the display box (BOX) back to ASCII '_' for any text that LEAVES the
         widget (copy, command hook, session restore -- a saved transcript instead
-        uses transcript_text, which stays lossless), so text leaving in Box mode is
-        pure ASCII. Map only in Box mode, where every non-ASCII
-        byte is a placeholder. Show mode also draws a box for no-glyph characters
-        (invisible / bidi / control), but there a box may equally be a real U+25A1
-        the program printed -- both copy safely as the box itself -- and Show mode is
-        the opt-in to copy real unicode, so leave its text untouched. Reveal / Detail
-        carry <U+XXXX> badges, already ASCII."""
-        return text.replace(BOX, '_') if self._mode == 'box' else text
+        uses transcript_text, which stays lossless), so neutralized text leaves as
+        pure ASCII. Map in every mode EXCEPT Show: Box neutralizes every non-ASCII
+        byte to a box, and in a TUI grid Reveal/Detail also fall back to the box
+        (a <U+XXXX> badge cannot fit one cell), so both must export '_'. In CLI
+        Reveal/Detail the document carries <U+XXXX> badges with no box, so the
+        replace is a harmless no-op. Only Show mode keeps the box: there it may be
+        a real U+25A1 the program printed, and Show is the opt-in to copy real
+        unicode, so its text is left untouched."""
+        return text if self._mode == 'show' else text.replace(BOX, '_')
 
     def toPlainText(self):
         # Overrides QPlainTextEdit.toPlainText so every external text getter
