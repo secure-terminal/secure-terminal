@@ -2392,7 +2392,19 @@ class SecureTerminal(QPlainTextEdit):
                 self._echo_caret('^\\')       # make the signal visible
                 return
             if Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
-                self._write(bytes([key & 0x1f]))   # Ctrl+C -> 0x03, Ctrl+L -> 0x0c
+                byte = key & 0x1f                  # Ctrl+C -> 0x03, Ctrl+L -> 0x0c
+                if byte in (0x0a, 0x0d):
+                    # Ctrl+J (LF) and Ctrl+M (CR) are accept-line: readline/zle
+                    # submit the line exactly like Enter, so route them through the
+                    # hook and reset the line state -- else the command runs unjudged
+                    # and a stale dirty flag would poison the next prompt.
+                    if self._hook is not None and self._hook_intercept():
+                        return
+                    self._line_buffer = ''
+                    self._line_dirty = False
+                    self._write(bytes([byte]))
+                    return
+                self._write(bytes([byte]))
                 if key == Qt.Key.Key_C:
                     self._echo_caret('^C')    # make the interrupt visible
                 if key in (Qt.Key.Key_C, Qt.Key.Key_U):
@@ -2863,11 +2875,14 @@ class SecureTerminal(QPlainTextEdit):
                 else sanitize_paste(raw))
         if not safe:
             return
-        # A non-submitting paste inserts text into the shell's line that
-        # _line_buffer never saw, so the hook would judge a stale line on the next
-        # Enter. Mark it dirty -> the hook fails safe (asks). (A submitting paste was
-        # held for review in insertFromMimeData.)
-        if self._hook is not None:
+        # A paste that leaves PENDING line-mode text (line mode, and not fully
+        # submitted by a trailing CR) inserts characters _line_buffer never saw, so
+        # the hook would judge a stale line on the next Enter -- mark it dirty so it
+        # fails safe (asks). A fully-submitting paste (approved via review) or a
+        # TUI-mode paste leaves no pending line, so it must NOT set the flag and
+        # poison the next fresh command.
+        if self._hook is not None and not self.tui_active() \
+                and safe and not safe.endswith('\r'):
             self._line_dirty = True
         data = safe.encode('utf-8')
         # Bracketed paste when the TUI program asked for it (DEC mode 2004), so a
