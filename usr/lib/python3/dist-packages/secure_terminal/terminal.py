@@ -2878,15 +2878,17 @@ class SecureTerminal(QPlainTextEdit):
         # Keep the hook's view of the line honest across a paste (line mode only; a
         # TUI paste does not touch the line-mode command).
         if self._hook is not None and not self.tui_active() and safe:
-            if safe.endswith('\r'):
-                # The paste submitted the line (approved via review). Reset like
-                # Enter, so a typed prefix cannot linger and make the hook judge
-                # "prefix + next command" on the following prompt.
+            if safe.endswith('\r') and not self._line_dirty:
+                # A CLEAN line plus a submitting paste: the trailing CR submits the
+                # line (approved via review). Reset like Enter so a typed prefix
+                # cannot linger and make the hook judge "prefix + next command".
+                # Only when clean: on an already-unverifiable line a quoted-insert
+                # (Ctrl+V) could make the CR literal rather than accept-line, so we
+                # must not ASSUME submission -- the else branch keeps failing safe.
                 self._line_buffer = ''
-                self._line_dirty = False
             else:
-                # Pending text _line_buffer never saw -> the hook must fail safe
-                # (ask) on the next Enter rather than judge a stale line.
+                # Pending text _line_buffer never saw, or a line we already cannot
+                # verify -> the hook must fail safe (ask) on the next Enter.
                 self._line_dirty = True
         data = safe.encode('utf-8')
         # Bracketed paste when the TUI program asked for it (DEC mode 2004), so a
