@@ -2398,6 +2398,12 @@ class SecureTerminal(QPlainTextEdit):
                 if key in (Qt.Key.Key_C, Qt.Key.Key_U):
                     self._line_buffer = ''    # SIGINT / kill-line discards the line
                     self._line_dirty = False
+                elif self._hook is not None:
+                    # any OTHER readline control edit (Ctrl+A/E/B/F move, Ctrl+K/W
+                    # kill, Ctrl+Y yank, Ctrl+T transpose, Ctrl+D delete, Ctrl+R
+                    # search) rewrites the real line without updating _line_buffer,
+                    # so the hook must not judge the stale buffer -- fail safe (ask).
+                    self._line_dirty = True
                 return
             # The rest of the Ctrl+@..Ctrl+_ range (Ctrl+[ -> 0x1b ESC, Ctrl+] ->
             # 0x1d, Ctrl+^ -> 0x1e, Ctrl+_ / Ctrl+/ -> 0x1f readline-undo, Ctrl+Space
@@ -2406,6 +2412,8 @@ class SecureTerminal(QPlainTextEdit):
             # hard-coded keymap. Enter/Tab/Backspace keep their dedicated handling.
             ctl = event.text()
             if len(ctl) == 1 and ord(ctl) < 0x20 and ctl not in '\b\t\n\r':
+                if self._hook is not None:
+                    self._line_dirty = True   # an unmirrored control edit may desync
                 self._write(ctl.encode('latin-1'))
                 return
 
@@ -2423,6 +2431,11 @@ class SecureTerminal(QPlainTextEdit):
             self._write(b'\x7f')
             return
         if key == Qt.Key.Key_Tab:
+            # Tab completion rewrites the shell's line (path/command completion)
+            # without updating _line_buffer, so the hook would judge the
+            # pre-completion fragment. Fail safe: ask.
+            if self._hook is not None:
+                self._line_dirty = True
             self._write(b'\t')
             return
 
@@ -2809,6 +2822,13 @@ class SecureTerminal(QPlainTextEdit):
         # so hold it for review too -- otherwise a pure-ASCII pastejacking payload
         # bypasses the default 'unicode' review the settings promise covers it (F3).
         risky = has_unicode or has_control or paste_is_multiline(raw)
+        # With a command hook configured (line mode), a paste that carries ANY
+        # newline/CR -- even a single trailing one that paste_is_multiline does not
+        # flag -- auto-submits the command the instant it is sent, with no Enter and
+        # so no hook evaluation. Hold it for review so the command is seen first.
+        if self._hook is not None and not self.tui_active() \
+                and ('\n' in raw or '\r' in raw):
+            risky = True
         warn = self._paste_warn
         if warn == 'always' or (warn == 'unicode' and risky):
             self._pending_paste = raw
@@ -2843,6 +2863,12 @@ class SecureTerminal(QPlainTextEdit):
                 else sanitize_paste(raw))
         if not safe:
             return
+        # A non-submitting paste inserts text into the shell's line that
+        # _line_buffer never saw, so the hook would judge a stale line on the next
+        # Enter. Mark it dirty -> the hook fails safe (asks). (A submitting paste was
+        # held for review in insertFromMimeData.)
+        if self._hook is not None:
+            self._line_dirty = True
         data = safe.encode('utf-8')
         # Bracketed paste when the TUI program asked for it (DEC mode 2004), so a
         # multi-line paste is delivered as data, not interpreted as keystrokes.
