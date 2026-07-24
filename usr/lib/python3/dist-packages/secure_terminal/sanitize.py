@@ -449,6 +449,21 @@ def apply_line_edits(line, col, text, max_line=0):
 # Vertical/absolute movement (A/B/H/d/...) is NOT honored -- those are stripped,
 # so a program can never reach another line or the scrollback. The worst these
 # allow is redrawing the CURRENT line, exactly like the \r/\b already honored.
+# Python 3.11+ raises ValueError converting an int string longer than
+# sys.int_info.default_max_str_digits (4300). A terminal numeric parameter is never
+# more than a few digits, so cap the length before int() -- an unbounded digit run
+# in untrusted output must not crash the parser (which runs in a Qt notifier slot).
+_MAX_NUM_DIGITS = 8
+
+
+def _safe_int(digits, default=0):
+    """int(digits) when it is a short ASCII digit run, else `default` -- never the
+    ValueError a 4300+-digit hostile parameter would raise (nor a non-ASCII-digit
+    one, which int() also rejects)."""
+    return (int(digits) if digits.isascii() and digits.isdigit()
+            and len(digits) <= _MAX_NUM_DIGITS else default)
+
+
 _LINE_CSI_RE = re.compile(r'\x1b\[([0-9]*)([CDGK])')
 _SGR_ONLY_RE = re.compile(r'\x1b\[([0-9;]*)m')
 
@@ -516,7 +531,7 @@ def feed_line_edits(cells, col, sgr, raw, max_line=0):
         if ch == '\x1b':
             m = _LINE_CSI_RE.match(raw, i)
             if m:
-                num = int(m.group(1)) if m.group(1) else None
+                num = _safe_int(m.group(1), None) if m.group(1) else None
                 op = m.group(2)
                 if op == 'C':
                     # cursor forward: like a real VT, moving past end-of-line
@@ -991,11 +1006,11 @@ def parse_sgr(param_str, state):
     (a 16-colour palette index int, a '#rrggbb' string for 256-colour / truecolor,
     or None) and 'bold' (bool). Pure so the colour logic can be tested without Qt;
     terminal.py turns the resulting state into a format."""
-    # str.isdigit() is True for non-ASCII digits (superscripts, other scripts)
-    # that int() rejects; require ASCII so a hostile parameter cannot crash the
-    # parser (production feeds ASCII via SGR_RE, so this changes nothing there).
-    nums = [int(p) if (p.isascii() and p.isdigit()) else 0
-            for p in (param_str.split(';') if param_str else ['0'])]
+    # _safe_int rejects a non-ASCII-digit parameter (str.isdigit() accepts
+    # superscripts / other scripts that int() does not) AND an over-long one (a
+    # 4300+-digit run would raise), so a hostile SGR parameter cannot crash the
+    # parser; a rejected parameter reads as 0 (a no-op reset).
+    nums = [_safe_int(p) for p in (param_str.split(';') if param_str else ['0'])]
     i = 0
     while i < len(nums):
         n = nums[i]

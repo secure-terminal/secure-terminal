@@ -188,7 +188,7 @@ _RISK_LABELS = {
 
 # Any numeric-code OSC: ESC ] <code> ; <params> (BEL | ST). The dispatcher acts on
 # the codes for enabled OSC features and ignores the rest (still stripped).
-_OSC_ANY = re.compile(rb'\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)')
+_OSC_ANY = re.compile(rb'\x1b\](\d{1,8});([^\x07\x1b]*)(?:\x07|\x1b\\)')
 _OSC_CLIP_MAX = 64 * 1024        # cap a clipboard payload; no unbounded writes
 # Whether an OSC body (the bytes after its "\x1b]") contains a terminator (BEL or
 # ST). Used to decide if a trailing OSC introducer is incomplete and must be held
@@ -206,7 +206,7 @@ for _k, _lbl, _codes, *_rest in OSC_FEATURES:
     for _c in _codes.replace(' ', '').split(','):
         _OSC_CODE_KEY.setdefault(int(_c), _k)
 # OSC code embedded in text (str, in the CLI display path).
-_OSC_CODE_RE = re.compile(r'\x1b\](\d+)')
+_OSC_CODE_RE = re.compile(r'\x1b\](\d{1,8})')
 
 # Alternate-screen enter/leave, as BYTES: pyte has no alt buffer, so the feed path
 # acts on these to snapshot/restore the primary screen at the exact boundary.
@@ -1814,7 +1814,10 @@ class SecureTerminal(QPlainTextEdit):
         still cannot paint text the same colour as the background to hide it."""
         if code == 4:
             parts = params.split(b';', 1)
-            if len(parts) != 2 or not parts[0].isdigit():
+            # cap the digit length: int() of a 4300+-digit run raises (a palette
+            # index is 0-255, so 8 is far more than enough) -- untrusted output
+            # must not crash the OSC handler.
+            if len(parts) != 2 or not parts[0].isdigit() or len(parts[0]) > 8:
                 return
             idx = int(parts[0])
             col = self._parse_osc_color(parts[1])
@@ -2854,12 +2857,14 @@ class SecureTerminal(QPlainTextEdit):
         # With a command hook configured (line mode), a paste that carries ANY
         # newline/CR -- even a single trailing one that paste_is_multiline does not
         # flag -- auto-submits the command the instant it is sent, with no Enter and
-        # so no hook evaluation. Hold it for review so the command is seen first.
-        if self._hook is not None and not self.tui_active() \
-                and ('\n' in raw or '\r' in raw):
-            risky = True
+        # so no hook evaluation. Force review so the command is seen first, even when
+        # paste review is otherwise off ('never') -- the hook gate must not be
+        # bypassable by the paste_warn setting.
+        hook_submit = (self._hook is not None and not self.tui_active()
+                       and ('\n' in raw or '\r' in raw))
+        risky = risky or hook_submit
         warn = self._paste_warn
-        if warn == 'always' or (warn == 'unicode' and risky):
+        if hook_submit or warn == 'always' or (warn == 'unicode' and risky):
             self._pending_paste = raw
             self._review_active = True
             self.paste_review_requested.emit(raw, int(self._paste_delay))
